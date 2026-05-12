@@ -1,348 +1,112 @@
-import "./style.css";
+import './style.css';
 
-const WIDTH = 1280;
-const HEIGHT = 720;
+const video = document.querySelector('#webcam');
+const canvas = document.querySelector('#stage');
+const ctx = canvas.getContext('2d');
 
-const ACTIVATION_DISTANCE = 170;
-const ACTIVATION_WINDOW_MS = 2000;
-const REQUIRED_VALID_MS = 900;
-
-const SIGN_LOCK_TIMEOUT_MS = 5000;
-const OCCLUSION_CHARGE_GRACE_MS = 1200;
-
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
-
-const handsCountEl = document.getElementById("handsCount");
-const leftDetectedEl = document.getElementById("leftDetected");
-const rightDetectedEl = document.getElementById("rightDetected");
-const stateEl = document.getElementById("state");
-const cameraSizeEl = document.getElementById("cameraSize");
-
-canvas.width = WIDTH;
-canvas.height = HEIGHT;
-
-let latestResults = null;
-let state = "IDLE";
-
-let validFrames = [];
-let validMs = 0;
-let handDistance = null;
-
-let signLocked = false;
-let signLockedTime = 0;
-
-let lastCloseTime = 0;
-let lastStableDistance = null;
-let lastStableHandsTime = 0;
+const DEBUG = true;
+const MIRROR_VIEW = true;
 
 const doorImage = new Image();
-doorImage.src = "/door_one.png";
+doorImage.src = '/door_one.png';
 
-function toCanvasPoint(landmark) {
-  return {
-    x: WIDTH - landmark.x * WIDTH,
-    y: landmark.y * HEIGHT,
-    z: landmark.z,
-  };
+let hands = null;
+let isHandsProcessing = false;
+
+let latestResults = null;
+let latestHands = [];
+
+let isDoorGestureActive = false;
+let isLeftGestureActive = false;
+let isRightGestureActive = false;
+
+let cameraReady = false;
+
+let rawLeftGestureActive = false;
+let rawRightGestureActive = false;
+let rawDoorGestureActive = false;
+
+let doorFalseFrameCount = 0;
+
+const DOOR_OFF_FRAME_THRESHOLD = 8;
+
+const HAND_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16],
+  [13, 17], [17, 18], [18, 19], [19, 20],
+  [0, 17],
+];
+
+const FINGER = {
+  thumb: {
+    tip: 4,
+    ip: 3,
+    mcp: 2,
+  },
+  index: {
+    tip: 8,
+    pip: 6,
+    mcp: 5,
+  },
+  middle: {
+    tip: 12,
+    pip: 10,
+    mcp: 9,
+  },
+  ring: {
+    tip: 16,
+    pip: 14,
+    mcp: 13,
+  },
+  pinky: {
+    tip: 20,
+    pip: 18,
+    mcp: 17,
+  },
+};
+
+init();
+
+async function init() {
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+
+  await setupCamera();
+  setupMediaPipeHands();
+
+  renderLoop();
 }
 
-function distance(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function getSealPoint(landmarks) {
-  const middleTip = toCanvasPoint(landmarks[12]);
-  const ringTip = toCanvasPoint(landmarks[16]);
-
-  return {
-    x: (middleTip.x + ringTip.x) / 2,
-    y: (middleTip.y + ringTip.y) / 2,
-  };
-}
-
-function getWristX(landmarks) {
-  return toCanvasPoint(landmarks[0]).x;
-}
-
-function angle(a, b, c) {
-  const ab = { x: a.x - b.x, y: a.y - b.y };
-  const cb = { x: c.x - b.x, y: c.y - b.y };
-
-  const dot = ab.x * cb.x + ab.y * cb.y;
-  const abLen = Math.hypot(ab.x, ab.y);
-  const cbLen = Math.hypot(cb.x, cb.y);
-
-  if (abLen === 0 || cbLen === 0) return 0;
-
-  const cos = dot / (abLen * cbLen);
-  return Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI;
-}
-
-function isFingerExtended(landmarks, mcp, pip, tip) {
-  const a = toCanvasPoint(landmarks[mcp]);
-  const b = toCanvasPoint(landmarks[pip]);
-  const c = toCanvasPoint(landmarks[tip]);
-
-  return angle(a, b, c) > 130;
-}
-
-function isPinkyFoldedForSign(landmarks) {
-  const mcp = toCanvasPoint(landmarks[17]);
-  const pip = toCanvasPoint(landmarks[18]);
-  const tip = toCanvasPoint(landmarks[20]);
-
-  const mcpToTip = distance(mcp, tip);
-  const mcpToPip = distance(mcp, pip);
-
-  return mcpToTip < mcpToPip * 1.55;
-}
-
-function isDomainSign(landmarks) {
-  const middleExtended = isFingerExtended(landmarks, 9, 10, 12);
-  const ringExtended = isFingerExtended(landmarks, 13, 14, 16);
-  const pinkyFolded = isPinkyFoldedForSign(landmarks);
-
-  return middleExtended && ringExtended && pinkyFolded;
-}
-
-function getStableHands(results) {
-  if (!results?.multiHandLandmarks || results.multiHandLandmarks.length < 2) {
-    return null;
-  }
-
-  const hands = results.multiHandLandmarks.map((landmarks) => {
-    return {
-      landmarks,
-      wristX: getWristX(landmarks),
-    };
-  });
-
-  hands.sort((a, b) => a.wristX - b.wristX);
-
-  return {
-    left: hands[0].landmarks,
-    right: hands[1].landmarks,
-  };
-}
-
-function drawMirroredVideo() {
-  if (video.readyState < 2) return;
-
-  ctx.save();
-  ctx.scale(-1, 1);
-  ctx.drawImage(video, -WIDTH, 0, WIDTH, HEIGHT);
-  ctx.restore();
-}
-
-function drawLandmarks(landmarks, color = "#00ff99") {
-  ctx.fillStyle = color;
-
-  for (const landmark of landmarks) {
-    const p = toCanvasPoint(landmark);
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
-function drawHandLabel(landmarks, label) {
-  const wrist = toCanvasPoint(landmarks[0]);
-
-  ctx.fillStyle = "white";
-  ctx.font = "24px Arial";
-  ctx.fillText(label, wrist.x + 12, wrist.y - 12);
-}
-
-function drawSealPoint(landmarks, color) {
-  const p = getSealPoint(landmarks);
-
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function drawConnectionLine(leftLandmarks, rightLandmarks) {
-  const leftPoint = getSealPoint(leftLandmarks);
-  const rightPoint = getSealPoint(rightLandmarks);
-
-  ctx.strokeStyle = handDistance <= ACTIVATION_DISTANCE ? "#ffff00" : "#ffffff";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.moveTo(leftPoint.x, leftPoint.y);
-  ctx.lineTo(rightPoint.x, rightPoint.y);
-  ctx.stroke();
-}
-
-function drawDebugOverlay() {
-  ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-  ctx.fillRect(16, HEIGHT - 150, 430, 122);
-
-  ctx.fillStyle = "#00ff99";
-  ctx.font = "22px Arial";
-  ctx.fillText(`distance: ${handDistance ? Math.round(handDistance) : "-"}`, 32, HEIGHT - 112);
-  ctx.fillText(`valid: ${(validMs / 1000).toFixed(1)} / ${(REQUIRED_VALID_MS / 1000).toFixed(1)}s`, 32, HEIGHT - 80);
-  ctx.fillText(`signLocked: ${signLocked}`, 32, HEIGHT - 48);
-}
-
-function drawDomainDoor() {
-  if (state !== "DOMAIN_READY") return;
-  if (!doorImage.complete) return;
-
-  const doorWidth = 520;
-  const doorHeight = doorWidth * (doorImage.height / doorImage.width);
-
-  const x = WIDTH / 2 - doorWidth / 2;
-  const y = HEIGHT / 2 - doorHeight / 2;
-
-  ctx.save();
-  ctx.globalAlpha = 0.95;
-  ctx.drawImage(doorImage, x, y, doorWidth, doorHeight);
-  ctx.restore();
-}
-
-function updateGestureState(results) {
-  const now = performance.now();
-  const stableHands = getStableHands(results);
-
-  validFrames = validFrames.filter((frame) => {
-    return now - frame.time <= ACTIVATION_WINDOW_MS;
-  });
-
-  if (state === "DOMAIN_READY") {
-    validMs = REQUIRED_VALID_MS;
-    return;
-  }
-
-  if (signLocked && now - signLockedTime > SIGN_LOCK_TIMEOUT_MS) {
-    signLocked = false;
-    signLockedTime = 0;
-    validFrames = [];
-    validMs = 0;
-    lastCloseTime = 0;
-    lastStableDistance = null;
-    lastStableHandsTime = 0;
-  }
-
-  if (stableHands) {
-    const { left, right } = stableHands;
-
-    const leftSeal = getSealPoint(left);
-    const rightSeal = getSealPoint(right);
-    handDistance = distance(leftSeal, rightSeal);
-
-    lastStableDistance = handDistance;
-    lastStableHandsTime = now;
-
-    const leftSign = isDomainSign(left);
-    const rightSign = isDomainSign(right);
-    const bothSign = leftSign && rightSign;
-
-    if (bothSign && !signLocked) {
-      signLocked = true;
-      signLockedTime = now;
-    }
-
-    const isClose = handDistance <= ACTIVATION_DISTANCE;
-
-    if (isClose) {
-      lastCloseTime = now;
-    }
-
-    if (signLocked && isClose) {
-      validFrames.push({
-        time: now,
-        duration: 33,
-      });
-    }
-  } else {
-    handDistance = lastStableDistance;
-
-    const recentlyHadStableHands =
-      now - lastStableHandsTime <= OCCLUSION_CHARGE_GRACE_MS;
-
-    const recentlyClose =
-      now - lastCloseTime <= OCCLUSION_CHARGE_GRACE_MS;
-
-    if (signLocked && recentlyHadStableHands && recentlyClose) {
-      validFrames.push({
-        time: now,
-        duration: 33,
-      });
-    }
-  }
-
-  validMs = validFrames.reduce((sum, frame) => {
-    return sum + frame.duration;
-  }, 0);
-
-  if (validMs >= REQUIRED_VALID_MS) {
-    state = "DOMAIN_READY";
-  } else if (signLocked && validMs > 0) {
-    state = "CHARGING";
-  } else if (signLocked) {
-    state = "SIGN_LOCKED";
-  } else {
-    state = "IDLE";
-  }
-}
-
-function updateDebug(results) {
-  const handsCount = results.multiHandLandmarks?.length ?? 0;
-  const stableHands = getStableHands(results);
-
-  handsCountEl.textContent = handsCount;
-  leftDetectedEl.textContent = Boolean(stableHands?.left);
-  rightDetectedEl.textContent = Boolean(stableHands?.right);
-  stateEl.textContent = state;
-}
-
-function render() {
-  ctx.clearRect(0, 0, WIDTH, HEIGHT);
-  drawMirroredVideo();
-
-  if (latestResults?.multiHandLandmarks) {
-    latestResults.multiHandLandmarks.forEach((landmarks, index) => {
-      const color = index === 0 ? "#00ff99" : "#ff3366";
-      drawLandmarks(landmarks, color);
-      drawHandLabel(landmarks, `HAND ${index + 1}`);
+async function setupCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        facingMode: 'user',
+      },
+      audio: false,
     });
+
+    video.srcObject = stream;
+
+    await new Promise((resolve) => {
+      video.onloadedmetadata = () => {
+        video.play();
+        resolve();
+      };
+    });
+
+    cameraReady = true;
+  } catch (error) {
+    console.error('웹캠을 시작할 수 없습니다.', error);
   }
-
-  const stableHands = getStableHands(latestResults);
-
-  if (stableHands) {
-    drawSealPoint(stableHands.left, signLocked ? "#ffff00" : "#00ff99");
-    drawSealPoint(stableHands.right, signLocked ? "#ffff00" : "#ff3366");
-
-    if (handDistance !== null) {
-      drawConnectionLine(stableHands.left, stableHands.right);
-    }
-  }
-
-  drawDomainDoor();
-  drawDebugOverlay();
-
-  requestAnimationFrame(render);
 }
 
-async function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = src;
-    script.onload = resolve;
-    script.onerror = reject;
-    document.head.appendChild(script);
-  });
-}
-
-async function setupHands() {
-  await loadScript("https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js");
-  await loadScript("https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js");
-
-  const hands = new window.Hands({
+function setupMediaPipeHands() {
+  hands = new Hands({
     locateFile: (file) => {
       return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
     },
@@ -350,29 +114,412 @@ async function setupHands() {
 
   hands.setOptions({
     maxNumHands: 2,
-    modelComplexity: 0,
-    minDetectionConfidence: 0.45,
-    minTrackingConfidence: 0.45,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.65,
+    minTrackingConfidence: 0.65,
   });
 
   hands.onResults((results) => {
     latestResults = results;
-    updateGestureState(results);
-    updateDebug(results);
+    latestHands = normalizeHands(results);
+    isHandsProcessing = false;
   });
-
-  const camera = new window.Camera(video, {
-    onFrame: async () => {
-      await hands.send({ image: video });
-    },
-    width: WIDTH,
-    height: HEIGHT,
-  });
-
-  await camera.start();
-
-  cameraSizeEl.textContent = `${video.videoWidth} x ${video.videoHeight}`;
 }
 
-setupHands();
-render();
+function renderLoop() {
+  /**
+   * 렌더 순서 고정
+   * 1. drawCoverVideo()
+   * 2. processHands()
+   * 3. evaluateGesture()
+   * 4. drawDoorOverlay()
+   * 5. drawHands()
+   * 6. drawDebugPanel()
+   */
+  drawCoverVideo();
+  processHands();
+  evaluateGesture();
+  drawDoorOverlay();
+  drawHands();
+  drawDebugPanel();
+
+  requestAnimationFrame(renderLoop);
+}
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function getStageSize() {
+  return {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  };
+}
+
+function getVideoDrawRect() {
+  const { width: canvasW, height: canvasH } = getStageSize();
+
+  const videoW = video.videoWidth || 1280;
+  const videoH = video.videoHeight || 720;
+
+  const canvasRatio = canvasW / canvasH;
+  const videoRatio = videoW / videoH;
+
+  let drawW;
+  let drawH;
+  let drawX;
+  let drawY;
+
+  if (videoRatio > canvasRatio) {
+    drawH = canvasH;
+    drawW = drawH * videoRatio;
+    drawX = (canvasW - drawW) / 2;
+    drawY = 0;
+  } else {
+    drawW = canvasW;
+    drawH = drawW / videoRatio;
+    drawX = 0;
+    drawY = (canvasH - drawH) / 2;
+  }
+
+  return {
+    x: drawX,
+    y: drawY,
+    width: drawW,
+    height: drawH,
+  };
+}
+
+function drawCoverVideo() {
+  const { width, height } = getStageSize();
+
+  ctx.clearRect(0, 0, width, height);
+
+  if (!cameraReady || video.readyState < 2) {
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, width, height);
+    return;
+  }
+
+  const rect = getVideoDrawRect();
+
+  ctx.save();
+
+  if (MIRROR_VIEW) {
+    ctx.translate(width, 0);
+    ctx.scale(-1, 1);
+
+    ctx.drawImage(
+      video,
+      width - rect.x - rect.width,
+      rect.y,
+      rect.width,
+      rect.height,
+    );
+  } else {
+    ctx.drawImage(
+      video,
+      rect.x,
+      rect.y,
+      rect.width,
+      rect.height,
+    );
+  }
+
+  ctx.restore();
+}
+
+function processHands() {
+  if (!hands) return;
+  if (!cameraReady) return;
+  if (video.readyState < 2) return;
+  if (isHandsProcessing) return;
+
+  isHandsProcessing = true;
+
+  hands.send({ image: video }).catch((error) => {
+    console.error('MediaPipe Hands 처리 오류:', error);
+    isHandsProcessing = false;
+  });
+}
+
+function evaluateGesture() {
+  isLeftGestureActive = false;
+  isRightGestureActive = false;
+
+  const leftHand = latestHands.find((hand) => hand.label === 'Left');
+  const rightHand = latestHands.find((hand) => hand.label === 'Right');
+
+  if (leftHand) {
+    isLeftGestureActive = isLeftHandDoorGesture(leftHand.landmarks);
+  }
+
+  if (rightHand) {
+    isRightGestureActive = isRightHandDoorGesture(rightHand.landmarks);
+  }
+
+  rawLeftGestureActive = isLeftGestureActive;
+  rawRightGestureActive = isRightGestureActive;
+  rawDoorGestureActive = rawLeftGestureActive && rawRightGestureActive;
+
+  updateDoorHoldState(rawDoorGestureActive);
+}
+
+function updateDoorHoldState(rawActive) {
+  if (rawActive) {
+    isDoorGestureActive = true;
+    doorFalseFrameCount = 0;
+    return;
+  }
+
+  doorFalseFrameCount += 1;
+
+  if (doorFalseFrameCount >= DOOR_OFF_FRAME_THRESHOLD) {
+    isDoorGestureActive = false;
+  }
+}
+
+function drawDoorOverlay() {
+  if (!isDoorGestureActive) return;
+  if (!doorImage.complete) return;
+
+  const { width, height } = getStageSize();
+
+  const overlayW = Math.min(width * 0.55, 520);
+  const overlayH = overlayW * (doorImage.height / doorImage.width);
+
+  const x = width / 2 - overlayW / 2;
+  const y = height / 2 - overlayH / 2;
+
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.drawImage(doorImage, x, y, overlayW, overlayH);
+  ctx.restore();
+}
+
+function drawHands() {
+  if (!latestHands.length) return;
+
+  latestHands.forEach((hand) => {
+    const points = hand.points;
+
+    drawHandLines(points, hand.label);
+    drawHandPoints(points, hand.label);
+    drawHandLabel(points, hand.label);
+  });
+}
+
+function drawHandLines(points, label) {
+  ctx.save();
+
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = label === 'Right'
+    ? 'rgba(0, 255, 160, 0.95)'
+    : 'rgba(70, 170, 255, 0.95)';
+
+  ctx.beginPath();
+
+  HAND_CONNECTIONS.forEach(([startIndex, endIndex]) => {
+    const start = points[startIndex];
+    const end = points[endIndex];
+
+    if (!start || !end) return;
+
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+  });
+
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawHandPoints(points, label) {
+  ctx.save();
+
+  const fillColor = label === 'Right'
+    ? 'rgba(0, 255, 160, 1)'
+    : 'rgba(70, 170, 255, 1)';
+
+  points.forEach((point, index) => {
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, index === 0 ? 6 : 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.75)';
+    ctx.stroke();
+  });
+
+  ctx.restore();
+}
+
+function drawHandLabel(points, label) {
+  const wrist = points[0];
+  if (!wrist) return;
+
+  ctx.save();
+
+  ctx.font = 'bold 16px Arial';
+  ctx.textBaseline = 'middle';
+
+  const text = label === 'Right' ? 'USER RIGHT' : 'USER LEFT';
+  const paddingX = 8;
+  const paddingY = 5;
+  const textW = ctx.measureText(text).width;
+  const boxW = textW + paddingX * 2;
+  const boxH = 26;
+
+  const x = wrist.x + 12;
+  const y = wrist.y - 18;
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+  ctx.fillRect(x, y, boxW, boxH);
+
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, x + paddingX, y + boxH / 2);
+
+  ctx.restore();
+}
+
+function drawDebugPanel() {
+  if (!DEBUG) return;
+
+  const { width } = getStageSize();
+
+  const rightHand = latestHands.find((hand) => hand.label === 'Right');
+  const leftHand = latestHands.find((hand) => hand.label === 'Left');
+
+  const lines = [
+    `cameraReady: ${cameraReady}`,
+    `hands: ${latestHands.length}`,
+    `left hand detected: ${Boolean(leftHand)}`,
+    `right hand detected: ${Boolean(rightHand)}`,
+    `left gesture: ${rawLeftGestureActive}`,
+    `right gesture: ${rawRightGestureActive}`,
+    `door raw: ${rawDoorGestureActive}`,
+    `door active: ${isDoorGestureActive}`,
+    `false frames: ${doorFalseFrameCount}`,
+    `door image loaded: ${doorImage.complete}`,
+  ];
+
+  ctx.save();
+
+  const panelW = 280;
+  const panelH = 28 + lines.length * 22;
+  const x = width - panelW - 16;
+  const y = 16;
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.68)';
+  ctx.fillRect(x, y, panelW, panelH);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px Arial';
+  ctx.textBaseline = 'top';
+
+  lines.forEach((line, index) => {
+    ctx.fillText(line, x + 14, y + 14 + index * 22);
+  });
+
+  ctx.restore();
+}
+
+function normalizeHands(results) {
+  const landmarksList = results.multiHandLandmarks || [];
+  const handednessList = results.multiHandedness || [];
+
+  return landmarksList.map((landmarks, index) => {
+    const handedness = handednessList[index];
+    const label = handedness?.label || 'Unknown';
+
+    return {
+      label,
+      landmarks,
+      points: landmarks.map((landmark) => {
+        return landmarkToCanvasPoint(landmark);
+      }),
+    };
+  });
+}
+
+function landmarkToCanvasPoint(landmark) {
+  const rect = getVideoDrawRect();
+
+  const xRatio = MIRROR_VIEW ? 1 - landmark.x : landmark.x;
+
+  return {
+    x: rect.x + xRatio * rect.width,
+    y: rect.y + landmark.y * rect.height,
+    z: landmark.z,
+  };
+}
+
+/**
+ * 현재 단계 기준 수인 판별
+ * - 검지 폄
+ * - 중지 폄
+ * - 약지 접힘
+ * - 새끼 접힘
+ *
+ * 왼손/오른손 모두 같은 기준으로 우선 판별
+ * (다음 단계에서 손별로 더 세밀하게 분리 가능)
+ */
+function isRightHandDoorGesture(landmarks) {
+  if (!landmarks || landmarks.length < 21) return false;
+
+  const indexExtended = isFingerExtendedVertical(landmarks, FINGER.index);
+  const middleExtended = isFingerExtendedVertical(landmarks, FINGER.middle);
+  const ringFolded = isFingerFoldedVertical(landmarks, FINGER.ring);
+  const pinkyFolded = isFingerFoldedVertical(landmarks, FINGER.pinky);
+
+  return (
+    indexExtended &&
+    middleExtended &&
+    ringFolded &&
+    pinkyFolded
+  );
+}
+
+function isLeftHandDoorGesture(landmarks) {
+  if (!landmarks || landmarks.length < 21) return false;
+
+  const indexExtended = isFingerExtendedVertical(landmarks, FINGER.index);
+  const middleExtended = isFingerExtendedVertical(landmarks, FINGER.middle);
+  const ringFolded = isFingerFoldedVertical(landmarks, FINGER.ring);
+  const pinkyFolded = isFingerFoldedVertical(landmarks, FINGER.pinky);
+
+  return (
+    indexExtended &&
+    middleExtended &&
+    ringFolded &&
+    pinkyFolded
+  );
+}
+
+function isFingerExtendedVertical(landmarks, finger) {
+  const tip = landmarks[finger.tip];
+  const pip = landmarks[finger.pip];
+  const mcp = landmarks[finger.mcp];
+
+  if (!tip || !pip || !mcp) return false;
+
+  const tipAbovePip = tip.y < pip.y;
+  const pipAboveMcp = pip.y < mcp.y;
+
+  return tipAbovePip && pipAboveMcp;
+}
+
+function isFingerFoldedVertical(landmarks, finger) {
+  const tip = landmarks[finger.tip];
+  const pip = landmarks[finger.pip];
+
+  if (!tip || !pip) return false;
+
+  return tip.y > pip.y;
+}
