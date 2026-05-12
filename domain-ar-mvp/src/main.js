@@ -13,7 +13,6 @@ doorImage.src = '/door_one.png';
 let hands = null;
 let isHandsProcessing = false;
 
-let latestResults = null;
 let latestHands = [];
 
 let isDoorGestureActive = false;
@@ -28,7 +27,11 @@ let rawDoorGestureActive = false;
 
 let doorFalseFrameCount = 0;
 
+let oneHandGestureStartTime = null;
+let oneHandGestureHoldProgress = 0;
+
 const DOOR_OFF_FRAME_THRESHOLD = 8;
+const ONE_HAND_HOLD_DURATION = 2000;
 
 const HAND_CONNECTIONS = [
   [0, 1], [1, 2], [2, 3], [3, 4],
@@ -120,7 +123,6 @@ function setupMediaPipeHands() {
   });
 
   hands.onResults((results) => {
-    latestResults = results;
     latestHands = normalizeHands(results);
     isHandsProcessing = false;
   });
@@ -257,30 +259,54 @@ function evaluateGesture() {
   const rightHand = latestHands.find((hand) => hand.label === 'Right');
 
   if (leftHand) {
-    isLeftGestureActive = isLeftHandDoorGesture(leftHand.landmarks);
+    isLeftGestureActive = isDoorGesture(leftHand.landmarks);
   }
 
   if (rightHand) {
-    isRightGestureActive = isRightHandDoorGesture(rightHand.landmarks);
+    isRightGestureActive = isDoorGesture(rightHand.landmarks);
   }
 
   rawLeftGestureActive = isLeftGestureActive;
   rawRightGestureActive = isRightGestureActive;
-  rawDoorGestureActive = rawLeftGestureActive && rawRightGestureActive;
 
-  updateDoorHoldState(rawDoorGestureActive);
+  // 왼손 또는 오른손 중 한 손 이상 수인 true면 발동
+  const oneHandGestureActive =
+    rawLeftGestureActive || rawRightGestureActive;
+
+  rawDoorGestureActive = oneHandGestureActive;
+
+  updateOneHandHoldState(oneHandGestureActive);
 }
 
-function updateDoorHoldState(rawActive) {
-  if (rawActive) {
-    isDoorGestureActive = true;
+function updateOneHandHoldState(oneHandGestureActive) {
+  const now = performance.now();
+
+  if (oneHandGestureActive) {
     doorFalseFrameCount = 0;
+
+    if (oneHandGestureStartTime === null) {
+      oneHandGestureStartTime = now;
+    }
+
+    const elapsed = now - oneHandGestureStartTime;
+
+    oneHandGestureHoldProgress = Math.min(
+      elapsed / ONE_HAND_HOLD_DURATION,
+      1,
+    );
+
+    if (elapsed >= ONE_HAND_HOLD_DURATION) {
+      isDoorGestureActive = true;
+    }
+
     return;
   }
 
   doorFalseFrameCount += 1;
 
   if (doorFalseFrameCount >= DOOR_OFF_FRAME_THRESHOLD) {
+    oneHandGestureStartTime = null;
+    oneHandGestureHoldProgress = 0;
     isDoorGestureActive = false;
   }
 }
@@ -403,8 +429,8 @@ function drawDebugPanel() {
     `right hand detected: ${Boolean(rightHand)}`,
     `left gesture: ${rawLeftGestureActive}`,
     `right gesture: ${rawRightGestureActive}`,
-    `door raw: ${rawDoorGestureActive}`,
     `door active: ${isDoorGestureActive}`,
+    `hold progress: ${oneHandGestureHoldProgress.toFixed(2)}`,
     `false frames: ${doorFalseFrameCount}`,
     `door image loaded: ${doorImage.complete}`,
   ];
@@ -470,23 +496,7 @@ function landmarkToCanvasPoint(landmark) {
  * 왼손/오른손 모두 같은 기준으로 우선 판별
  * (다음 단계에서 손별로 더 세밀하게 분리 가능)
  */
-function isRightHandDoorGesture(landmarks) {
-  if (!landmarks || landmarks.length < 21) return false;
-
-  const indexExtended = isFingerExtendedVertical(landmarks, FINGER.index);
-  const middleExtended = isFingerExtendedVertical(landmarks, FINGER.middle);
-  const ringFolded = isFingerFoldedVertical(landmarks, FINGER.ring);
-  const pinkyFolded = isFingerFoldedVertical(landmarks, FINGER.pinky);
-
-  return (
-    indexExtended &&
-    middleExtended &&
-    ringFolded &&
-    pinkyFolded
-  );
-}
-
-function isLeftHandDoorGesture(landmarks) {
+function isDoorGesture(landmarks) {
   if (!landmarks || landmarks.length < 21) return false;
 
   const indexExtended = isFingerExtendedVertical(landmarks, FINGER.index);
