@@ -7,6 +7,9 @@ const ACTIVATION_DISTANCE = 170;
 const ACTIVATION_WINDOW_MS = 2000;
 const REQUIRED_VALID_MS = 900;
 
+const SIGN_LOCK_TIMEOUT_MS = 5000;
+const OCCLUSION_CHARGE_GRACE_MS = 1200;
+
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
@@ -16,9 +19,6 @@ const leftDetectedEl = document.getElementById("leftDetected");
 const rightDetectedEl = document.getElementById("rightDetected");
 const stateEl = document.getElementById("state");
 const cameraSizeEl = document.getElementById("cameraSize");
-
-const SIGN_LOCK_TIMEOUT_MS = 5000;
-const OCCLUSION_CHARGE_GRACE_MS = 1200;
 
 canvas.width = WIDTH;
 canvas.height = HEIGHT;
@@ -34,6 +34,8 @@ let signLocked = false;
 let signLockedTime = 0;
 
 let lastCloseTime = 0;
+let lastStableDistance = null;
+let lastStableHandsTime = 0;
 
 const doorImage = new Image();
 doorImage.src = "/door_one.png";
@@ -86,33 +88,15 @@ function isFingerExtended(landmarks, mcp, pip, tip) {
   return angle(a, b, c) > 130;
 }
 
-function isFingerFolded(landmarks, mcp, pip, tip) {
-  const a = toCanvasPoint(landmarks[mcp]);
-  const b = toCanvasPoint(landmarks[pip]);
-  const c = toCanvasPoint(landmarks[tip]);
-
-  return angle(a, b, c) < 155;
-}
-
-function getDistanceFromWrist(landmarks, pointIndex) {
-  const wrist = toCanvasPoint(landmarks[0]);
-  const point = toCanvasPoint(landmarks[pointIndex]);
-  return distance(wrist, point);
-}
-
 function isPinkyFoldedForSign(landmarks) {
-  const pinkyTipDist = getDistanceFromWrist(landmarks, 20);
-  const ringTipDist = getDistanceFromWrist(landmarks, 16);
-  const middleTipDist = getDistanceFromWrist(landmarks, 12);
+  const mcp = toCanvasPoint(landmarks[17]);
+  const pip = toCanvasPoint(landmarks[18]);
+  const tip = toCanvasPoint(landmarks[20]);
 
-  const pinkyAngleFolded = isFingerFolded(landmarks, 17, 18, 20);
+  const mcpToTip = distance(mcp, tip);
+  const mcpToPip = distance(mcp, pip);
 
-  // 소지가 중지/약지보다 손목에 훨씬 가까우면 접힌 것으로 판단
-  const pinkyShorterThanExtendedFingers =
-    pinkyTipDist < ringTipDist * 0.9 &&
-    pinkyTipDist < middleTipDist * 0.9;
-
-  return pinkyAngleFolded || pinkyShorterThanExtendedFingers;
+  return mcpToTip < mcpToPip * 1.55;
 }
 
 function isDomainSign(landmarks) {
@@ -141,13 +125,6 @@ function getStableHands(results) {
     left: hands[0].landmarks,
     right: hands[1].landmarks,
   };
-}
-
-function isHandsCrossed(leftLandmarks, rightLandmarks) {
-  const leftWristX = getWristX(leftLandmarks);
-  const rightWristX = getWristX(rightLandmarks);
-
-  return leftWristX > rightWristX;
 }
 
 function drawMirroredVideo() {
@@ -201,12 +178,13 @@ function drawConnectionLine(leftLandmarks, rightLandmarks) {
 
 function drawDebugOverlay() {
   ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-  ctx.fillRect(16, HEIGHT - 120, 360, 92);
+  ctx.fillRect(16, HEIGHT - 150, 430, 122);
 
   ctx.fillStyle = "#00ff99";
   ctx.font = "22px Arial";
-  ctx.fillText(`distance: ${handDistance ? Math.round(handDistance) : "-"}`, 32, HEIGHT - 84);
-  ctx.fillText(`valid: ${(validMs / 1000).toFixed(1)} / ${(REQUIRED_VALID_MS / 1000).toFixed(1)}s`, 32, HEIGHT - 52);
+  ctx.fillText(`distance: ${handDistance ? Math.round(handDistance) : "-"}`, 32, HEIGHT - 112);
+  ctx.fillText(`valid: ${(validMs / 1000).toFixed(1)} / ${(REQUIRED_VALID_MS / 1000).toFixed(1)}s`, 32, HEIGHT - 80);
+  ctx.fillText(`signLocked: ${signLocked}`, 32, HEIGHT - 48);
 }
 
 function drawDomainDoor() {
@@ -243,6 +221,9 @@ function updateGestureState(results) {
     signLockedTime = 0;
     validFrames = [];
     validMs = 0;
+    lastCloseTime = 0;
+    lastStableDistance = null;
+    lastStableHandsTime = 0;
   }
 
   if (stableHands) {
@@ -251,6 +232,9 @@ function updateGestureState(results) {
     const leftSeal = getSealPoint(left);
     const rightSeal = getSealPoint(right);
     handDistance = distance(leftSeal, rightSeal);
+
+    lastStableDistance = handDistance;
+    lastStableHandsTime = now;
 
     const leftSign = isDomainSign(left);
     const rightSign = isDomainSign(right);
@@ -274,11 +258,15 @@ function updateGestureState(results) {
       });
     }
   } else {
-    handDistance = null;
+    handDistance = lastStableDistance;
 
-    const recentlyClose = now - lastCloseTime <= OCCLUSION_CHARGE_GRACE_MS;
+    const recentlyHadStableHands =
+      now - lastStableHandsTime <= OCCLUSION_CHARGE_GRACE_MS;
 
-    if (signLocked && recentlyClose) {
+    const recentlyClose =
+      now - lastCloseTime <= OCCLUSION_CHARGE_GRACE_MS;
+
+    if (signLocked && recentlyHadStableHands && recentlyClose) {
       validFrames.push({
         time: now,
         duration: 33,
@@ -324,11 +312,8 @@ function render() {
     drawHandLabel(stableHands.left, "LEFT");
     drawHandLabel(stableHands.right, "RIGHT");
 
-  const leftSign = isDomainSign(stableHands.left);
-  const rightSign = isDomainSign(stableHands.right);
-
-  drawSealPoint(stableHands.left, leftSign ? "#ffff00" : "#00ff99");
-  drawSealPoint(stableHands.right, rightSign ? "#ffff00" : "#ff3366");
+    drawSealPoint(stableHands.left, signLocked ? "#ffff00" : "#00ff99");
+    drawSealPoint(stableHands.right, signLocked ? "#ffff00" : "#ff3366");
 
     if (handDistance !== null) {
       drawConnectionLine(stableHands.left, stableHands.right);
@@ -363,9 +348,9 @@ async function setupHands() {
 
   hands.setOptions({
     maxNumHands: 2,
-    modelComplexity: 1,
-    minDetectionConfidence: 0.6,
-    minTrackingConfidence: 0.6,
+    modelComplexity: 0,
+    minDetectionConfidence: 0.45,
+    minTrackingConfidence: 0.45,
   });
 
   hands.onResults((results) => {
