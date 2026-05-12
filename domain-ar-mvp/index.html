@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Domain AR MVP</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="canvas"></canvas>
+      <video id="video" playsinline muted></video>
+
+      <div id="debug">
+        <div>hands detected: <span id="handsCount">0</span></div>
+        <div>left detected: <span id="leftDetected">false</span></div>
+        <div>right detected: <span id="rightDetected">false</span></div>
+        <div>state: <span id="state">IDLE</span></div>
+        <div>camera: <span id="cameraSize">-</span></div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
