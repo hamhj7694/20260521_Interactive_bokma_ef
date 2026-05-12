@@ -303,15 +303,17 @@ function render() {
   ctx.clearRect(0, 0, WIDTH, HEIGHT);
   drawMirroredVideo();
 
+  if (latestResults?.multiHandLandmarks) {
+    latestResults.multiHandLandmarks.forEach((landmarks, index) => {
+      const color = index === 0 ? "#00ff99" : "#ff3366";
+      drawLandmarks(landmarks, color);
+      drawHandLabel(landmarks, `HAND ${index + 1}`);
+    });
+  }
+
   const stableHands = getStableHands(latestResults);
 
   if (stableHands) {
-    drawLandmarks(stableHands.left, "#00ff99");
-    drawLandmarks(stableHands.right, "#ff3366");
-
-    drawHandLabel(stableHands.left, "LEFT");
-    drawHandLabel(stableHands.right, "RIGHT");
-
     drawSealPoint(stableHands.left, signLocked ? "#ffff00" : "#00ff99");
     drawSealPoint(stableHands.right, signLocked ? "#ffff00" : "#ff3366");
 
