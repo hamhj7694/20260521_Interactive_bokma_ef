@@ -10,23 +10,47 @@ const MIRROR_VIEW = true;
 const doorImage = new Image();
 doorImage.src = '/door_one.png';
 
+// ===== 연출 타임라인 =====
+// 0.0~1.2초: 붉은 안개 서서히 생성
+// 1.2~2.2초: 붉은 안개 유지
+// 2.2~3.2초: door_one.png 크게 줌인된 상태로 서서히 등장
+// 3.2~4.2초: 문 고정
+// 4.2~5.0초: 사람 누끼 + door 함께 빠르게 줌아웃
+const FOG_IN_DURATION = 1200;
+const FOG_HOLD_DURATION = 1000;
+const DOOR_REVEAL_DURATION = 1000;
+const DOOR_HOLD_DURATION = 1000;
+const ZOOM_OUT_DURATION = 800;
+
+const STATE_NORMAL = 'NORMAL';
+const STATE_SEQUENCE = 'SEQUENCE';
+const STATE_FINAL = 'FINAL';
+
+let sceneState = STATE_NORMAL;
+let sequenceStartedAt = null;
+let sequenceTriggered = false;
+
+let segmenter = null;
+let isSegmentationProcessing = false;
+let segmentationReady = false;
+
+const personCanvas = document.createElement('canvas');
+const personCtx = personCanvas.getContext('2d');
+
 let hands = null;
 let isHandsProcessing = false;
-
 let latestHands = [];
 
-let isDoorGestureActive = false;
+let cameraReady = false;
+
 let isLeftGestureActive = false;
 let isRightGestureActive = false;
-
-let cameraReady = false;
 
 let rawLeftGestureActive = false;
 let rawRightGestureActive = false;
 let rawDoorGestureActive = false;
 
 let doorFalseFrameCount = 0;
-
 let oneHandGestureStartTime = null;
 let oneHandGestureHoldProgress = 0;
 
@@ -76,8 +100,19 @@ async function init() {
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
 
+  await loadScriptIfNeeded(
+    'Hands',
+    'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js',
+  );
+
+  await loadScriptIfNeeded(
+    'SelfieSegmentation',
+    'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js',
+  );
+
   await setupCamera();
   setupMediaPipeHands();
+  setupSegmentation();
 
   renderLoop();
 }
@@ -109,7 +144,7 @@ async function setupCamera() {
 }
 
 function setupMediaPipeHands() {
-  hands = new Hands({
+  hands = new window.Hands({
     locateFile: (file) => {
       return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
     },
@@ -128,21 +163,41 @@ function setupMediaPipeHands() {
   });
 }
 
+function setupSegmentation() {
+  segmenter = new window.SelfieSegmentation({
+    locateFile: (file) => {
+      return `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`;
+    },
+  });
+
+  segmenter.setOptions({
+    modelSelection: 1,
+    selfieMode: false,
+  });
+
+  segmenter.onResults((results) => {
+    makePersonLayer(results);
+    isSegmentationProcessing = false;
+    segmentationReady = true;
+  });
+}
+
 function renderLoop() {
-  /**
-   * 렌더 순서 고정
-   * 1. drawCoverVideo()
-   * 2. processHands()
-   * 3. evaluateGesture()
-   * 4. drawDoorOverlay()
-   * 5. drawHands()
-   * 6. drawDebugPanel()
-   */
-  drawCoverVideo();
   processHands();
+
+  if (sceneState === STATE_SEQUENCE || sceneState === STATE_FINAL) {
+    processSegmentation();
+  }
+
   evaluateGesture();
-  drawDoorOverlay();
-  drawHands();
+
+  if (sceneState === STATE_NORMAL) {
+    drawCoverVideo();
+    drawHands();
+  } else {
+    drawSequenceScene();
+  }
+
   drawDebugPanel();
 
   requestAnimationFrame(renderLoop);
@@ -251,7 +306,40 @@ function processHands() {
   });
 }
 
+function processSegmentation() {
+  if (!segmenter) return;
+  if (!cameraReady) return;
+  if (video.readyState < 2) return;
+  if (isSegmentationProcessing) return;
+
+  isSegmentationProcessing = true;
+
+  segmenter.send({ image: video }).catch((error) => {
+    console.error('Selfie Segmentation 처리 오류:', error);
+    isSegmentationProcessing = false;
+  });
+}
+
+function makePersonLayer(results) {
+  const sourceW = video.videoWidth || 1280;
+  const sourceH = video.videoHeight || 720;
+
+  personCanvas.width = sourceW;
+  personCanvas.height = sourceH;
+
+  personCtx.clearRect(0, 0, sourceW, sourceH);
+
+  personCtx.drawImage(results.segmentationMask, 0, 0, sourceW, sourceH);
+
+  personCtx.globalCompositeOperation = 'source-in';
+  personCtx.drawImage(results.image, 0, 0, sourceW, sourceH);
+
+  personCtx.globalCompositeOperation = 'source-over';
+}
+
 function evaluateGesture() {
+  if (sceneState !== STATE_NORMAL) return;
+
   isLeftGestureActive = false;
   isRightGestureActive = false;
 
@@ -269,7 +357,6 @@ function evaluateGesture() {
   rawLeftGestureActive = isLeftGestureActive;
   rawRightGestureActive = isRightGestureActive;
 
-  // 왼손 또는 오른손 중 한 손 이상 수인 true면 발동
   const oneHandGestureActive =
     rawLeftGestureActive || rawRightGestureActive;
 
@@ -296,7 +383,7 @@ function updateOneHandHoldState(oneHandGestureActive) {
     );
 
     if (elapsed >= ONE_HAND_HOLD_DURATION) {
-      isDoorGestureActive = true;
+      startDoorSequence();
     }
 
     return;
@@ -307,26 +394,252 @@ function updateOneHandHoldState(oneHandGestureActive) {
   if (doorFalseFrameCount >= DOOR_OFF_FRAME_THRESHOLD) {
     oneHandGestureStartTime = null;
     oneHandGestureHoldProgress = 0;
-    isDoorGestureActive = false;
   }
 }
 
-function drawDoorOverlay() {
-  if (!isDoorGestureActive) return;
+function startDoorSequence() {
+  if (sequenceTriggered) return;
+
+  sequenceTriggered = true;
+  sceneState = STATE_SEQUENCE;
+  sequenceStartedAt = performance.now();
+}
+
+function drawSequenceScene() {
+  const { width, height } = getStageSize();
+
+  ctx.clearRect(0, 0, width, height);
+
+  const now = performance.now();
+  const elapsed = now - sequenceStartedAt;
+  const phase = getSequencePhase(elapsed);
+
+  // 누끼가 아직 준비되지 않은 첫 순간에는 정상 캠을 유지해서 검은 깜빡임 방지
+  if (!segmentationReady && phase !== 'FINAL') {
+    drawCoverVideo();
+    return;
+  }
+
+  if (phase === 'FINAL') {
+    sceneState = STATE_FINAL;
+  }
+
+  // 0.0~1.2초: 정상 캠 위에 붉은 안개가 서서히 생성
+  if (phase === 'FOG_IN') {
+    const t = easeInOutCubic(elapsed / FOG_IN_DURATION);
+
+    drawCoverVideo();
+    drawFogBackground(t);
+
+    if (segmentationReady) {
+      drawPersonLayerScaled(1);
+    }
+
+    return;
+  }
+
+  // 1.2~2.2초: 붉은 안개 유지
+  if (phase === 'FOG_HOLD') {
+    drawFogBackground(1);
+    drawPersonLayerScaled(1);
+
+    return;
+  }
+
+  // 2.2~3.2초: door_one.png 크게 줌인된 상태로 서서히 등장
+  if (phase === 'DOOR_REVEAL') {
+    const localElapsed =
+      elapsed - (FOG_IN_DURATION + FOG_HOLD_DURATION);
+
+    const t = easeOutCubic(localElapsed / DOOR_REVEAL_DURATION);
+
+    const doorScale = lerp(3.4, 2.25, t);
+    const doorAlpha = lerp(0, 1, t);
+
+    drawFogBackground(1);
+    drawDoorScaled(doorScale, doorAlpha, 1);
+    drawPersonLayerScaled(1);
+
+    return;
+  }
+
+  // 3.2~4.2초: 문 고정
+  if (phase === 'DOOR_HOLD') {
+    drawFogBackground(1);
+    drawDoorScaled(2.25, 1, 1);
+    drawPersonLayerScaled(1);
+
+    return;
+  }
+
+  // 4.2~5.0초: 사람 누끼 + door 함께 빠르게 줌아웃
+  if (phase === 'ZOOM_OUT') {
+    const localElapsed =
+      elapsed -
+      (
+        FOG_IN_DURATION +
+        FOG_HOLD_DURATION +
+        DOOR_REVEAL_DURATION +
+        DOOR_HOLD_DURATION
+      );
+
+    const t = easeOutCubic(localElapsed / ZOOM_OUT_DURATION);
+
+    const groupScale = lerp(1, 0.76, t);
+    const doorScale = lerp(2.25, 0.95, t);
+
+    drawFogBackground(1);
+    drawDoorScaled(doorScale, 1, groupScale);
+    drawPersonLayerScaled(groupScale);
+
+    return;
+  }
+
+  drawFogBackground(1);
+  drawDoorScaled(0.95, 1, 0.76);
+  drawPersonLayerScaled(0.76);
+}
+
+function getSequencePhase(elapsed) {
+  const t1 = FOG_IN_DURATION;
+  const t2 = t1 + FOG_HOLD_DURATION;
+  const t3 = t2 + DOOR_REVEAL_DURATION;
+  const t4 = t3 + DOOR_HOLD_DURATION;
+  const t5 = t4 + ZOOM_OUT_DURATION;
+
+  if (elapsed < t1) return 'FOG_IN';
+  if (elapsed < t2) return 'FOG_HOLD';
+  if (elapsed < t3) return 'DOOR_REVEAL';
+  if (elapsed < t4) return 'DOOR_HOLD';
+  if (elapsed < t5) return 'ZOOM_OUT';
+
+  return 'FINAL';
+}
+
+function drawFogBackground(intensity = 1) {
+  const { width, height } = getStageSize();
+  const time = performance.now() * 0.001;
+
+  ctx.save();
+
+  ctx.fillStyle = `rgba(10, 2, 4, ${0.88 * intensity})`;
+  ctx.fillRect(0, 0, width, height);
+
+  const baseGradient = ctx.createRadialGradient(
+    width / 2,
+    height / 2,
+    80,
+    width / 2,
+    height / 2,
+    Math.max(width, height) * 0.75,
+  );
+
+  baseGradient.addColorStop(0, `rgba(180, 30, 30, ${0.45 * intensity})`);
+  baseGradient.addColorStop(0.45, `rgba(100, 0, 0, ${0.35 * intensity})`);
+  baseGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+  ctx.fillStyle = baseGradient;
+  ctx.fillRect(0, 0, width, height);
+
+  for (let i = 0; i < 10; i++) {
+    const x =
+      width / 2 +
+      Math.cos(time * 0.45 + i * 1.21) * width * 0.3;
+
+    const y =
+      height / 2 +
+      Math.sin(time * 0.33 + i * 0.93) * height * 0.23;
+
+    const radius = 130 + Math.sin(time * 0.9 + i) * 38;
+
+    const fog = ctx.createRadialGradient(x, y, 0, x, y, radius);
+
+    fog.addColorStop(0, `rgba(165, 18, 18, ${0.2 * intensity})`);
+    fog.addColorStop(1, 'rgba(165, 18, 18, 0)');
+
+    ctx.fillStyle = fog;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawPersonLayerScaled(groupScale = 1) {
+  if (personCanvas.width === 0 || personCanvas.height === 0) return;
+
+  const { width, height } = getStageSize();
+  const rect = getVideoDrawRect();
+
+  ctx.save();
+
+  ctx.translate(width / 2, height / 2);
+  ctx.scale(groupScale, groupScale);
+  ctx.translate(-width / 2, -height / 2);
+
+  if (MIRROR_VIEW) {
+    ctx.translate(width, 0);
+    ctx.scale(-1, 1);
+
+    ctx.drawImage(
+      personCanvas,
+      width - rect.x - rect.width,
+      rect.y,
+      rect.width,
+      rect.height,
+    );
+  } else {
+    ctx.drawImage(
+      personCanvas,
+      rect.x,
+      rect.y,
+      rect.width,
+      rect.height,
+    );
+  }
+
+  ctx.restore();
+}
+
+function drawDoorScaled(doorScale, alpha, groupScale = 1) {
   if (!doorImage.complete) return;
 
   const { width, height } = getStageSize();
 
-  const overlayW = Math.min(width * 0.55, 520);
-  const overlayH = overlayW * (doorImage.height / doorImage.width);
+  const doorW = width * doorScale;
+  const doorH = doorW * (doorImage.height / doorImage.width);
 
-  const x = width / 2 - overlayW / 2;
-  const y = height / 2 - overlayH / 2;
+  const x = width / 2 - doorW / 2;
+  const y = height / 2 - doorH / 2;
 
   ctx.save();
-  ctx.globalAlpha = 1;
-  ctx.drawImage(doorImage, x, y, overlayW, overlayH);
+
+  ctx.translate(width / 2, height / 2);
+  ctx.scale(groupScale, groupScale);
+  ctx.translate(-width / 2, -height / 2);
+
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(doorImage, x, y, doorW, doorH);
+
   ctx.restore();
+}
+
+function easeOutCubic(t) {
+  const v = Math.max(0, Math.min(1, t));
+  return 1 - Math.pow(1 - v, 3);
+}
+
+function easeInOutCubic(t) {
+  const v = Math.max(0, Math.min(1, t));
+
+  return v < 0.5
+    ? 4 * v * v * v
+    : 1 - Math.pow(-2 * v + 2, 3) / 2;
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
 }
 
 function drawHands() {
@@ -422,6 +735,11 @@ function drawDebugPanel() {
   const rightHand = latestHands.find((hand) => hand.label === 'Right');
   const leftHand = latestHands.find((hand) => hand.label === 'Left');
 
+  const phase =
+    sceneState === STATE_SEQUENCE && sequenceStartedAt
+      ? getSequencePhase(performance.now() - sequenceStartedAt)
+      : sceneState;
+
   const lines = [
     `cameraReady: ${cameraReady}`,
     `hands: ${latestHands.length}`,
@@ -429,15 +747,19 @@ function drawDebugPanel() {
     `right hand detected: ${Boolean(rightHand)}`,
     `left gesture: ${rawLeftGestureActive}`,
     `right gesture: ${rawRightGestureActive}`,
-    `door active: ${isDoorGestureActive}`,
+    `one hand gesture: ${rawDoorGestureActive}`,
     `hold progress: ${oneHandGestureHoldProgress.toFixed(2)}`,
     `false frames: ${doorFalseFrameCount}`,
+    `sequenceTriggered: ${sequenceTriggered}`,
+    `sceneState: ${sceneState}`,
+    `phase: ${phase}`,
+    `segmentationReady: ${segmentationReady}`,
     `door image loaded: ${doorImage.complete}`,
   ];
 
   ctx.save();
 
-  const panelW = 280;
+  const panelW = 310;
   const panelH = 28 + lines.length * 22;
   const x = width - panelW - 16;
   const y = 16;
@@ -486,16 +808,6 @@ function landmarkToCanvasPoint(landmark) {
   };
 }
 
-/**
- * 현재 단계 기준 수인 판별
- * - 검지 폄
- * - 중지 폄
- * - 약지 접힘
- * - 새끼 접힘
- *
- * 왼손/오른손 모두 같은 기준으로 우선 판별
- * (다음 단계에서 손별로 더 세밀하게 분리 가능)
- */
 function isDoorGesture(landmarks) {
   if (!landmarks || landmarks.length < 21) return false;
 
@@ -532,4 +844,20 @@ function isFingerFoldedVertical(landmarks, finger) {
   if (!tip || !pip) return false;
 
   return tip.y > pip.y;
+}
+
+function loadScriptIfNeeded(globalName, src) {
+  if (window[globalName]) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = reject;
+
+    document.head.appendChild(script);
+  });
 }
