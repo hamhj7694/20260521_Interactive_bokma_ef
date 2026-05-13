@@ -329,11 +329,14 @@ function makePersonLayer(results) {
 
   personCtx.clearRect(0, 0, sourceW, sourceH);
 
+  // 1. 사람 마스크
   personCtx.drawImage(results.segmentationMask, 0, 0, sourceW, sourceH);
 
+  // 2. 마스크 안에만 원본 캠 영상 넣기
   personCtx.globalCompositeOperation = 'source-in';
   personCtx.drawImage(results.image, 0, 0, sourceW, sourceH);
 
+  // 3. 합성 모드 복구
   personCtx.globalCompositeOperation = 'source-over';
 }
 
@@ -414,17 +417,12 @@ function drawSequenceScene() {
   const elapsed = now - sequenceStartedAt;
   const phase = getSequencePhase(elapsed);
 
-  // 누끼가 아직 준비되지 않은 첫 순간에는 정상 캠을 유지해서 검은 깜빡임 방지
-  if (!segmentationReady && phase !== 'FINAL') {
-    drawCoverVideo();
-    return;
-  }
-
   if (phase === 'FINAL') {
     sceneState = STATE_FINAL;
   }
 
-  // 0.0~1.2초: 정상 캠 위에 붉은 안개가 서서히 생성
+  // 0.0~1.2초: 기존 캠 화면 위에 붉은 안개가 서서히 덮이게 처리
+  // 이렇게 해야 발동 직후 검은색 깜빡임이 안 생김
   if (phase === 'FOG_IN') {
     const t = easeInOutCubic(elapsed / FOG_IN_DURATION);
 
@@ -438,7 +436,13 @@ function drawSequenceScene() {
     return;
   }
 
-  // 1.2~2.2초: 붉은 안개 유지
+  // 누끼가 아직 준비되지 않은 상태에서 FOG_IN 이후 단계로 넘어간 경우
+  // 검은 화면 대신 정상 캠을 잠깐 유지
+  if (!segmentationReady) {
+    drawCoverVideo();
+    return;
+  }
+
   if (phase === 'FOG_HOLD') {
     drawFogBackground(1);
     drawPersonLayerScaled(1);
@@ -446,7 +450,6 @@ function drawSequenceScene() {
     return;
   }
 
-  // 2.2~3.2초: door_one.png 크게 줌인된 상태로 서서히 등장
   if (phase === 'DOOR_REVEAL') {
     const localElapsed =
       elapsed - (FOG_IN_DURATION + FOG_HOLD_DURATION);
@@ -463,7 +466,6 @@ function drawSequenceScene() {
     return;
   }
 
-  // 3.2~4.2초: 문 고정
   if (phase === 'DOOR_HOLD') {
     drawFogBackground(1);
     drawDoorScaled(2.25, 1, 1);
@@ -472,7 +474,6 @@ function drawSequenceScene() {
     return;
   }
 
-  // 4.2~5.0초: 사람 누끼 + door 함께 빠르게 줌아웃
   if (phase === 'ZOOM_OUT') {
     const localElapsed =
       elapsed -
