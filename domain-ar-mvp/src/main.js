@@ -1,26 +1,89 @@
 import './style.css';
 
+// =====================================================
+// 1. DOM / Canvas
+// =====================================================
+
 const video = document.querySelector('#webcam');
 const canvas = document.querySelector('#stage');
 const ctx = canvas.getContext('2d');
 
+// =====================================================
+// 2. Global Settings
+// =====================================================
+
 const DEBUG = true;
 const MIRROR_VIEW = true;
 
+// =====================================================
+// 3. Assets
+// =====================================================
+
 const doorImage = new Image();
 doorImage.src = '/door_one.png';
+
+// =====================================================
+// 4. Timeline Settings
+// =====================================================
 
 // ===== 연출 타임라인 =====
 // 0.0~1.2초: 붉은 안개 서서히 생성
 // 1.2~2.2초: 붉은 안개 유지
 // 2.2~3.2초: door_one.png 크게 줌인된 상태로 서서히 등장
 // 3.2~4.2초: 문 고정
-// 4.2~5.0초: 사람 누끼 + door 함께 빠르게 줌아웃
-const FOG_IN_DURATION = 1200;
+// 4.2~5.0초: 사람 누끼 + door 빠르게 줌아웃
+const FOG_IN_DURATION = 2200;
 const FOG_HOLD_DURATION = 1000;
 const DOOR_REVEAL_DURATION = 1000;
 const DOOR_HOLD_DURATION = 1000;
 const ZOOM_OUT_DURATION = 800;
+
+// =====================================================
+// 5. Door / Person Scene Settings
+// =====================================================
+
+// 문 등장/고정 크기
+const DOOR_START_SCALE = 2.25;
+
+// 문 최종 줌아웃 크기
+const DOOR_FINAL_SCALE = 0.45;
+
+// 문 등장 시작 위치
+// 화면 높이 기준. -값일수록 위로 올라감
+const DOOR_REVEAL_START_OFFSET_RATIO = -0.8;
+
+// 문 최종 기본 위치
+const DOOR_DEFAULT_OFFSET_Y = -4;
+
+// 인물 누끼 최종 줌아웃 크기
+const PERSON_FINAL_SCALE = 0.15;
+
+// 인물 누끼 최종 기준점
+// 0.5 = 화면 중앙, 0.75 = 화면 아래쪽
+const PERSON_FINAL_PIVOT_Y = 0.75;
+
+// 전경 붉은 물 최종 진하기
+const FRONT_WATER_FINAL_ALPHA = 1;
+
+// 전경 붉은 물 세로 위치
+// 0.8 = 화면 아래쪽, 숫자가 작을수록 위로 올라감
+const FRONT_WATER_Y_RATIO = 0.8;
+
+// 전경 붉은 물 높이
+const FRONT_WATER_HEIGHT_RATIO = 0.16;
+
+// 전경 붉은 물 폭
+const FRONT_WATER_WIDTH_RATIO = 0.78;
+
+// 전경 붉은 물결 움직임 강도
+const FRONT_WATER_WAVE_AMOUNT = 5;
+
+// 전경 붉은 물 높이(문 이미지 기준, 숫자 클수록 아래 0~1)
+const FRONT_WATER_DOOR_RELATIVE_Y = 1;
+
+// =====================================================
+// 6. Scene State
+// =====================================================
 
 const STATE_NORMAL = 'NORMAL';
 const STATE_SEQUENCE = 'SEQUENCE';
@@ -30,18 +93,26 @@ let sceneState = STATE_NORMAL;
 let sequenceStartedAt = null;
 let sequenceTriggered = false;
 
-let segmenter = null;
-let isSegmentationProcessing = false;
-let segmentationReady = false;
-
-const personCanvas = document.createElement('canvas');
-const personCtx = personCanvas.getContext('2d');
+// =====================================================
+// 7. MediaPipe / Segmentation State
+// =====================================================
 
 let hands = null;
 let isHandsProcessing = false;
 let latestHands = [];
 
+let segmenter = null;
+let isSegmentationProcessing = false;
+let segmentationReady = false;
+
 let cameraReady = false;
+
+const personCanvas = document.createElement('canvas');
+const personCtx = personCanvas.getContext('2d');
+
+// =====================================================
+// 8. Gesture State
+// =====================================================
 
 let isLeftGestureActive = false;
 let isRightGestureActive = false;
@@ -56,6 +127,10 @@ let oneHandGestureHoldProgress = 0;
 
 const DOOR_OFF_FRAME_THRESHOLD = 8;
 const ONE_HAND_HOLD_DURATION = 2000;
+
+// =====================================================
+// 9. Hand Landmark Settings
+// =====================================================
 
 const HAND_CONNECTIONS = [
   [0, 1], [1, 2], [2, 3], [3, 4],
@@ -94,6 +169,10 @@ const FINGER = {
   },
 };
 
+// =====================================================
+// 10. Init
+// =====================================================
+
 init();
 
 async function init() {
@@ -105,17 +184,22 @@ async function init() {
     'https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js',
   );
 
-  await loadScriptIfNeeded(
-    'SelfieSegmentation',
-    'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js',
-  );
+  // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
+  // await loadScriptIfNeeded(
+  //   'SelfieSegmentation',
+  //   'https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js',
+  // );
 
   await setupCamera();
   setupMediaPipeHands();
-  setupSegmentation();
+  // setupSegmentation(); // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
 
   renderLoop();
 }
+
+// =====================================================
+// 11. Camera / MediaPipe Setup
+// =====================================================
 
 async function setupCamera() {
   try {
@@ -182,12 +266,17 @@ function setupSegmentation() {
   });
 }
 
+// =====================================================
+// 12. Main Render Loop
+// =====================================================
+
 function renderLoop() {
   processHands();
 
-  if (sceneState === STATE_SEQUENCE || sceneState === STATE_FINAL) {
-    processSegmentation();
-  }
+  // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
+  // if (sceneState === STATE_SEQUENCE || sceneState === STATE_FINAL) {
+  //   processSegmentation();
+  // }
 
   evaluateGesture();
 
@@ -202,6 +291,10 @@ function renderLoop() {
 
   requestAnimationFrame(renderLoop);
 }
+
+// =====================================================
+// 13. Canvas / Video Helpers
+// =====================================================
 
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
@@ -277,7 +370,7 @@ function drawCoverVideo() {
       width - rect.x - rect.width,
       rect.y,
       rect.width,
-      rect.height,
+      rect.height
     );
   } else {
     ctx.drawImage(
@@ -285,12 +378,16 @@ function drawCoverVideo() {
       rect.x,
       rect.y,
       rect.width,
-      rect.height,
+      rect.height
     );
   }
 
   ctx.restore();
 }
+
+// =====================================================
+// 14. Hands Processing
+// =====================================================
 
 function processHands() {
   if (!hands) return;
@@ -305,6 +402,40 @@ function processHands() {
     isHandsProcessing = false;
   });
 }
+
+function normalizeHands(results) {
+  const landmarksList = results.multiHandLandmarks || [];
+  const handednessList = results.multiHandedness || [];
+
+  return landmarksList.map((landmarks, index) => {
+    const handedness = handednessList[index];
+    const label = handedness?.label || 'Unknown';
+
+    return {
+      label,
+      landmarks,
+      points: landmarks.map((landmark) => {
+        return landmarkToCanvasPoint(landmark);
+      }),
+    };
+  });
+}
+
+function landmarkToCanvasPoint(landmark) {
+  const rect = getVideoDrawRect();
+
+  const xRatio = MIRROR_VIEW ? 1 - landmark.x : landmark.x;
+
+  return {
+    x: rect.x + xRatio * rect.width,
+    y: rect.y + landmark.y * rect.height,
+    z: landmark.z,
+  };
+}
+
+// =====================================================
+// 15. Segmentation Processing
+// =====================================================
 
 function processSegmentation() {
   if (!segmenter) return;
@@ -339,6 +470,10 @@ function makePersonLayer(results) {
   // 3. 합성 모드 복구
   personCtx.globalCompositeOperation = 'source-over';
 }
+
+// =====================================================
+// 16. Gesture Logic
+// =====================================================
 
 function evaluateGesture() {
   if (sceneState !== STATE_NORMAL) return;
@@ -400,6 +535,48 @@ function updateOneHandHoldState(oneHandGestureActive) {
   }
 }
 
+function isDoorGesture(landmarks) {
+  if (!landmarks || landmarks.length < 21) return false;
+
+  const indexExtended = isFingerExtendedVertical(landmarks, FINGER.index);
+  const middleExtended = isFingerExtendedVertical(landmarks, FINGER.middle);
+  const ringFolded = isFingerFoldedVertical(landmarks, FINGER.ring);
+  const pinkyFolded = isFingerFoldedVertical(landmarks, FINGER.pinky);
+
+  return (
+    indexExtended &&
+    middleExtended &&
+    ringFolded &&
+    pinkyFolded
+  );
+}
+
+function isFingerExtendedVertical(landmarks, finger) {
+  const tip = landmarks[finger.tip];
+  const pip = landmarks[finger.pip];
+  const mcp = landmarks[finger.mcp];
+
+  if (!tip || !pip || !mcp) return false;
+
+  const tipAbovePip = tip.y < pip.y;
+  const pipAboveMcp = pip.y < mcp.y;
+
+  return tipAbovePip && pipAboveMcp;
+}
+
+function isFingerFoldedVertical(landmarks, finger) {
+  const tip = landmarks[finger.tip];
+  const pip = landmarks[finger.pip];
+
+  if (!tip || !pip) return false;
+
+  return tip.y > pip.y;
+}
+
+// =====================================================
+// 17. Sequence / Door Scene
+// =====================================================
+
 function startDoorSequence() {
   if (sequenceTriggered) return;
 
@@ -417,27 +594,9 @@ function drawSequenceScene() {
   const elapsed = now - sequenceStartedAt;
   const phase = getSequencePhase(elapsed);
 
-  // ===== 연출 크기/위치 기준값 =====
-  // 문 등장/고정 크기
-  const DOOR_START_SCALE = 2.25;
-
-  // 문 최종 줌아웃 크기
-  const DOOR_FINAL_SCALE = 0.6;
-
-  // 문 등장 시작 위치
-  // -값일수록 위로 올라감
-  // 화면 높이 기준으로 올려야 문이 크게 그려져도 위치 변화가 잘 보임
-  const DOOR_REVEAL_START_OFFSET_Y = -height * 0.8;
-
-  // 문 기본 위치
-  const DOOR_DEFAULT_OFFSET_Y = 0;
-
-  // 인물 누끼 최종 줌아웃 크기
-  const PERSON_FINAL_SCALE = 0.1;
-
-  // 인물 누끼 최종 기준점
-  // 0.5 = 화면 중앙, 0.75 = 화면 아래쪽
-  const PERSON_FINAL_PIVOT_Y = 0.75;
+  // 화면 높이 기준 문 시작 위치
+  const doorRevealStartOffsetY =
+    height * DOOR_REVEAL_START_OFFSET_RATIO;
 
   if (phase === 'FINAL') {
     sceneState = STATE_FINAL;
@@ -445,35 +604,37 @@ function drawSequenceScene() {
 
   // 0.0~1.2초: 기존 캠 화면 위에 붉은 안개가 서서히 덮이게 처리
   if (phase === 'FOG_IN') {
-    const t = easeInOutCubic(elapsed / FOG_IN_DURATION);
+    const rawT = elapsed / FOG_IN_DURATION;
+    const t = easeInCubic(rawT);
 
     drawCoverVideo();
     drawFogBackground(t);
 
-    if (segmentationReady) {
-      drawPersonLayerScaled(1, 0.5);
-    }
+    // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
+    // if (segmentationReady) {
+    //   drawPersonLayerScaled(1, 0.5);
+    // }
 
     return;
   }
 
-  // 누끼가 아직 준비되지 않은 상태에서 FOG_IN 이후 단계로 넘어간 경우
-  if (!segmentationReady) {
-    drawCoverVideo();
-    return;
-  }
+  // 누끼가 아직 준비되지 않은 상태에서 FOG_IN 이후 단계로 넘어간 경우 // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
+  // if (!segmentationReady) {
+  //   drawCoverVideo();
+  //   return;
+  // }
 
   // 1.2~2.2초: 붉은 안개 유지
   if (phase === 'FOG_HOLD') {
     drawFogBackground(1);
-    drawPersonLayerScaled(1, 0.5);
+    //drawPersonLayerScaled(1, 0.5); // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
 
     return;
   }
 
   // 2.2~3.2초: 문 등장
   // 문 크기는 고정, 투명도만 증가
-  // 위치는 -80에서 0으로 자연스럽게 내려와서 다음 DOOR_HOLD와 위치가 맞음
+  // 문 위치는 줌아웃 전까지 최초 위치 유지
   if (phase === 'DOOR_REVEAL') {
     const localElapsed =
       elapsed - (FOG_IN_DURATION + FOG_HOLD_DURATION);
@@ -482,27 +643,28 @@ function drawSequenceScene() {
 
     const doorScale = DOOR_START_SCALE;
     const doorAlpha = lerp(0, 1, t);
-    const doorOffsetY = DOOR_REVEAL_START_OFFSET_Y;
+    const doorOffsetY = doorRevealStartOffsetY;
 
     drawFogBackground(1);
     drawDoorScaled(doorScale, doorAlpha, doorOffsetY);
-    drawPersonLayerScaled(1, 0.5);
+    // drawPersonLayerScaled(1, 0.5); // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
 
     return;
   }
 
   // 3.2~4.2초: 문 고정
-  // DOOR_REVEAL 마지막 위치/크기와 동일하게 맞춤
+  // DOOR_REVEAL 마지막 위치/크기와 동일하게 유지
   if (phase === 'DOOR_HOLD') {
     drawFogBackground(1);
-    drawDoorScaled(DOOR_START_SCALE, 1, DOOR_REVEAL_START_OFFSET_Y);
-    drawPersonLayerScaled(1, 0.5);
+    drawDoorScaled(DOOR_START_SCALE, 1, doorRevealStartOffsetY);
+    //drawPersonLayerScaled(1, 0.5); // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
 
     return;
   }
 
   // 4.2~5.0초: 문과 인물 누끼 줌아웃
   // 문 크기와 인물 크기는 따로 조절
+  // 문은 최초 위치에서 기본 위치로 이동
   // 인물 기준점도 0.5에서 0.75로 부드럽게 이동
   if (phase === 'ZOOM_OUT') {
     const localElapsed =
@@ -518,17 +680,22 @@ function drawSequenceScene() {
 
     const doorScale = lerp(DOOR_START_SCALE, DOOR_FINAL_SCALE, t);
     const doorOffsetY = lerp(
-      DOOR_REVEAL_START_OFFSET_Y,
+      doorRevealStartOffsetY,
       DOOR_DEFAULT_OFFSET_Y,
       t,
     );
 
-    const personScale = lerp(1, PERSON_FINAL_SCALE, t);
-    const personPivotY = lerp(0.5, PERSON_FINAL_PIVOT_Y, t);
+    // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
+    // const personScale = lerp(1, PERSON_FINAL_SCALE, t);
+    // const personPivotY = lerp(0.5, PERSON_FINAL_PIVOT_Y, t);
 
     drawFogBackground(1);
     drawDoorScaled(doorScale, 1, doorOffsetY);
-    drawPersonLayerScaled(personScale, personPivotY);
+    // drawPersonLayerScaled(personScale, personPivotY); // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
+
+    // 줌아웃이 진행될수록 전경 물 서서히 생김
+    const frontWaterAlpha = lerp(0, FRONT_WATER_FINAL_ALPHA, t);
+    drawFrontWaterLayer(frontWaterAlpha);
 
     return;
   }
@@ -537,7 +704,10 @@ function drawSequenceScene() {
   // ZOOM_OUT 마지막 값과 완전히 동일하게 유지
   drawFogBackground(1);
   drawDoorScaled(DOOR_FINAL_SCALE, 1, DOOR_DEFAULT_OFFSET_Y);
-  drawPersonLayerScaled(PERSON_FINAL_SCALE, PERSON_FINAL_PIVOT_Y);
+  // drawPersonLayerScaled(PERSON_FINAL_SCALE, PERSON_FINAL_PIVOT_Y); // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
+
+  // 최종 장면에서 문 하단 경계를 전경 붉은 물로 가림
+  drawFrontWaterLayer(FRONT_WATER_FINAL_ALPHA);
 }
 
 function getSequencePhase(elapsed) {
@@ -555,6 +725,10 @@ function getSequencePhase(elapsed) {
 
   return 'FINAL';
 }
+
+// =====================================================
+// 18. Drawing Effects
+// =====================================================
 
 function drawFogBackground(intensity = 1) {
   const { width, height } = getStageSize();
@@ -602,6 +776,82 @@ function drawFogBackground(intensity = 1) {
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
   }
+
+  ctx.restore();
+}
+
+function drawFrontWaterLayer(alpha = 1) {
+  const { width, height } = getStageSize();
+  const time = performance.now() * 0.001;
+
+  const centerX = width / 2;
+
+  const doorW = width * DOOR_FINAL_SCALE;
+  const doorH = doorW * (doorImage.height / doorImage.width);
+  const doorY = height / 2 - doorH / 2 + DOOR_DEFAULT_OFFSET_Y;
+
+  const baseY = doorY + doorH * FRONT_WATER_DOOR_RELATIVE_Y;
+
+  const waterW = width * FRONT_WATER_WIDTH_RATIO;
+  const waterH = height * FRONT_WATER_HEIGHT_RATIO;
+
+  ctx.save();
+
+  // 앞쪽 물결 라인
+  ctx.beginPath();
+
+  const startX = centerX - waterW * 0.72;
+  const endX = centerX + waterW * 0.72;
+  const waveY = baseY - waterH * 0.28;
+
+  ctx.moveTo(startX, waveY);
+
+  for (let x = startX; x <= endX; x += 28) {
+    const progress = (x - startX) / (endX - startX);
+    const wave =
+      Math.sin(progress * Math.PI * 4 + time * 1.4) *
+      FRONT_WATER_WAVE_AMOUNT;
+
+    ctx.lineTo(x, waveY + wave);
+  }
+
+  ctx.lineTo(endX, baseY + waterH * 0.45);
+  ctx.lineTo(startX, baseY + waterH * 0.45);
+  ctx.closePath();
+
+  const waveGradient = ctx.createLinearGradient(
+    centerX,
+    waveY - waterH * 0.2,
+    centerX,
+    baseY + waterH * 0.55,
+  );
+
+  waveGradient.addColorStop(0, `rgba(210, 35, 30, ${0.34 * alpha})`);
+  waveGradient.addColorStop(0.45, `rgba(120, 0, 0, ${0.28 * alpha})`);
+  waveGradient.addColorStop(1, `rgba(35, 0, 0, ${0.05 * alpha})`);
+
+  ctx.fillStyle = waveGradient;
+  ctx.fill();
+
+  // 물 표면 하이라이트
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = `rgba(255, 70, 55, ${0.18 * alpha})`;
+  ctx.lineWidth = 2;
+
+  ctx.beginPath();
+  ctx.moveTo(startX, waveY);
+
+  for (let x = startX; x <= endX; x += 24) {
+    const progress = (x - startX) / (endX - startX);
+    const wave =
+      Math.sin(progress * Math.PI * 5 + time * 1.7) *
+      FRONT_WATER_WAVE_AMOUNT *
+      0.6;
+
+    ctx.lineTo(x, waveY + wave);
+  }
+
+  ctx.stroke();
 
   ctx.restore();
 }
@@ -660,23 +910,6 @@ function drawDoorScaled(doorScale, alpha, offsetY = 0) {
   ctx.globalAlpha = alpha;
   ctx.drawImage(doorImage, x, y, doorW, doorH);
   ctx.restore();
-}
-
-function easeOutCubic(t) {
-  const v = Math.max(0, Math.min(1, t));
-  return 1 - Math.pow(1 - v, 3);
-}
-
-function easeInOutCubic(t) {
-  const v = Math.max(0, Math.min(1, t));
-
-  return v < 0.5
-    ? 4 * v * v * v
-    : 1 - Math.pow(-2 * v + 2, 3) / 2;
-}
-
-function lerp(a, b, t) {
-  return a + (b - a) * t;
 }
 
 function drawHands() {
@@ -764,6 +997,10 @@ function drawHandLabel(points, label) {
   ctx.restore();
 }
 
+// =====================================================
+// 19. Debug
+// =====================================================
+
 function drawDebugPanel() {
   if (!DEBUG) return;
 
@@ -815,72 +1052,25 @@ function drawDebugPanel() {
   ctx.restore();
 }
 
-function normalizeHands(results) {
-  const landmarksList = results.multiHandLandmarks || [];
-  const handednessList = results.multiHandedness || [];
+// =====================================================
+// 20. Utility
+// =====================================================
 
-  return landmarksList.map((landmarks, index) => {
-    const handedness = handednessList[index];
-    const label = handedness?.label || 'Unknown';
-
-    return {
-      label,
-      landmarks,
-      points: landmarks.map((landmark) => {
-        return landmarkToCanvasPoint(landmark);
-      }),
-    };
-  });
+function easeOutCubic(t) {
+  const v = Math.max(0, Math.min(1, t));
+  return 1 - Math.pow(1 - v, 3);
 }
 
-function landmarkToCanvasPoint(landmark) {
-  const rect = getVideoDrawRect();
+function easeInOutCubic(t) {
+  const v = Math.max(0, Math.min(1, t));
 
-  const xRatio = MIRROR_VIEW ? 1 - landmark.x : landmark.x;
-
-  return {
-    x: rect.x + xRatio * rect.width,
-    y: rect.y + landmark.y * rect.height,
-    z: landmark.z,
-  };
+  return v < 0.5
+    ? 4 * v * v * v
+    : 1 - Math.pow(-2 * v + 2, 3) / 2;
 }
 
-function isDoorGesture(landmarks) {
-  if (!landmarks || landmarks.length < 21) return false;
-
-  const indexExtended = isFingerExtendedVertical(landmarks, FINGER.index);
-  const middleExtended = isFingerExtendedVertical(landmarks, FINGER.middle);
-  const ringFolded = isFingerFoldedVertical(landmarks, FINGER.ring);
-  const pinkyFolded = isFingerFoldedVertical(landmarks, FINGER.pinky);
-
-  return (
-    indexExtended &&
-    middleExtended &&
-    ringFolded &&
-    pinkyFolded
-  );
-}
-
-function isFingerExtendedVertical(landmarks, finger) {
-  const tip = landmarks[finger.tip];
-  const pip = landmarks[finger.pip];
-  const mcp = landmarks[finger.mcp];
-
-  if (!tip || !pip || !mcp) return false;
-
-  const tipAbovePip = tip.y < pip.y;
-  const pipAboveMcp = pip.y < mcp.y;
-
-  return tipAbovePip && pipAboveMcp;
-}
-
-function isFingerFoldedVertical(landmarks, finger) {
-  const tip = landmarks[finger.tip];
-  const pip = landmarks[finger.pip];
-
-  if (!tip || !pip) return false;
-
-  return tip.y > pip.y;
+function lerp(a, b, t) {
+  return a + (b - a) * t;
 }
 
 function loadScriptIfNeeded(globalName, src) {
@@ -897,4 +1087,9 @@ function loadScriptIfNeeded(globalName, src) {
 
     document.head.appendChild(script);
   });
+}
+
+function easeInCubic(t) {
+  const v = Math.max(0, Math.min(1, t));
+  return v * v * v;
 }
