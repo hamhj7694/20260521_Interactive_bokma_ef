@@ -417,12 +417,33 @@ function drawSequenceScene() {
   const elapsed = now - sequenceStartedAt;
   const phase = getSequencePhase(elapsed);
 
+  // ===== 연출 크기/위치 기준값 =====
+  // 문 등장/고정 크기
+  const DOOR_START_SCALE = 2.25;
+
+  // 문 최종 줌아웃 크기
+  const DOOR_FINAL_SCALE = 0.6;
+
+  // 문 등장 시작 위치
+  // -값일수록 위로 올라감
+  // 화면 높이 기준으로 올려야 문이 크게 그려져도 위치 변화가 잘 보임
+  const DOOR_REVEAL_START_OFFSET_Y = -height * 0.8;
+
+  // 문 기본 위치
+  const DOOR_DEFAULT_OFFSET_Y = 0;
+
+  // 인물 누끼 최종 줌아웃 크기
+  const PERSON_FINAL_SCALE = 0.1;
+
+  // 인물 누끼 최종 기준점
+  // 0.5 = 화면 중앙, 0.75 = 화면 아래쪽
+  const PERSON_FINAL_PIVOT_Y = 0.75;
+
   if (phase === 'FINAL') {
     sceneState = STATE_FINAL;
   }
 
   // 0.0~1.2초: 기존 캠 화면 위에 붉은 안개가 서서히 덮이게 처리
-  // 이렇게 해야 발동 직후 검은색 깜빡임이 안 생김
   if (phase === 'FOG_IN') {
     const t = easeInOutCubic(elapsed / FOG_IN_DURATION);
 
@@ -430,50 +451,59 @@ function drawSequenceScene() {
     drawFogBackground(t);
 
     if (segmentationReady) {
-      drawPersonLayerScaled(1);
+      drawPersonLayerScaled(1, 0.5);
     }
 
     return;
   }
 
   // 누끼가 아직 준비되지 않은 상태에서 FOG_IN 이후 단계로 넘어간 경우
-  // 검은 화면 대신 정상 캠을 잠깐 유지
   if (!segmentationReady) {
     drawCoverVideo();
     return;
   }
 
+  // 1.2~2.2초: 붉은 안개 유지
   if (phase === 'FOG_HOLD') {
     drawFogBackground(1);
-    drawPersonLayerScaled(1);
+    drawPersonLayerScaled(1, 0.5);
 
     return;
   }
 
+  // 2.2~3.2초: 문 등장
+  // 문 크기는 고정, 투명도만 증가
+  // 위치는 -80에서 0으로 자연스럽게 내려와서 다음 DOOR_HOLD와 위치가 맞음
   if (phase === 'DOOR_REVEAL') {
     const localElapsed =
       elapsed - (FOG_IN_DURATION + FOG_HOLD_DURATION);
 
     const t = easeOutCubic(localElapsed / DOOR_REVEAL_DURATION);
 
-    const doorScale = lerp(3.4, 2.25, t);
+    const doorScale = DOOR_START_SCALE;
     const doorAlpha = lerp(0, 1, t);
+    const doorOffsetY = DOOR_REVEAL_START_OFFSET_Y;
 
     drawFogBackground(1);
-    drawDoorScaled(doorScale, doorAlpha, 1);
-    drawPersonLayerScaled(1);
+    drawDoorScaled(doorScale, doorAlpha, doorOffsetY);
+    drawPersonLayerScaled(1, 0.5);
 
     return;
   }
 
+  // 3.2~4.2초: 문 고정
+  // DOOR_REVEAL 마지막 위치/크기와 동일하게 맞춤
   if (phase === 'DOOR_HOLD') {
     drawFogBackground(1);
-    drawDoorScaled(2.25, 1, 1);
-    drawPersonLayerScaled(1);
+    drawDoorScaled(DOOR_START_SCALE, 1, DOOR_REVEAL_START_OFFSET_Y);
+    drawPersonLayerScaled(1, 0.5);
 
     return;
   }
 
+  // 4.2~5.0초: 문과 인물 누끼 줌아웃
+  // 문 크기와 인물 크기는 따로 조절
+  // 인물 기준점도 0.5에서 0.75로 부드럽게 이동
   if (phase === 'ZOOM_OUT') {
     const localElapsed =
       elapsed -
@@ -486,19 +516,28 @@ function drawSequenceScene() {
 
     const t = easeOutCubic(localElapsed / ZOOM_OUT_DURATION);
 
-    const groupScale = lerp(1, 0.76, t);
-    const doorScale = lerp(2.25, 0.95, t);
+    const doorScale = lerp(DOOR_START_SCALE, DOOR_FINAL_SCALE, t);
+    const doorOffsetY = lerp(
+      DOOR_REVEAL_START_OFFSET_Y,
+      DOOR_DEFAULT_OFFSET_Y,
+      t,
+    );
+
+    const personScale = lerp(1, PERSON_FINAL_SCALE, t);
+    const personPivotY = lerp(0.5, PERSON_FINAL_PIVOT_Y, t);
 
     drawFogBackground(1);
-    drawDoorScaled(doorScale, 1, groupScale);
-    drawPersonLayerScaled(groupScale);
+    drawDoorScaled(doorScale, 1, doorOffsetY);
+    drawPersonLayerScaled(personScale, personPivotY);
 
     return;
   }
 
+  // 최종 고정 상태
+  // ZOOM_OUT 마지막 값과 완전히 동일하게 유지
   drawFogBackground(1);
-  drawDoorScaled(0.95, 1, 0.76);
-  drawPersonLayerScaled(0.76);
+  drawDoorScaled(DOOR_FINAL_SCALE, 1, DOOR_DEFAULT_OFFSET_Y);
+  drawPersonLayerScaled(PERSON_FINAL_SCALE, PERSON_FINAL_PIVOT_Y);
 }
 
 function getSequencePhase(elapsed) {
@@ -536,7 +575,7 @@ function drawFogBackground(intensity = 1) {
   );
 
   baseGradient.addColorStop(0, `rgba(180, 30, 30, ${0.45 * intensity})`);
-  baseGradient.addColorStop(0.45, `rgba(100, 0, 0, ${0.35 * intensity})`);
+  baseGradient.addColorStop(0.6, `rgba(100, 0, 0, ${0.35 * intensity})`);
   baseGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
   ctx.fillStyle = baseGradient;
@@ -567,17 +606,20 @@ function drawFogBackground(intensity = 1) {
   ctx.restore();
 }
 
-function drawPersonLayerScaled(groupScale = 1) {
+function drawPersonLayerScaled(groupScale = 1, pivotYRatio = 0.5) {
   if (personCanvas.width === 0 || personCanvas.height === 0) return;
 
   const { width, height } = getStageSize();
   const rect = getVideoDrawRect();
 
+  const pivotX = width / 2;
+  const pivotY = height * pivotYRatio;
+
   ctx.save();
 
-  ctx.translate(width / 2, height / 2);
+  ctx.translate(pivotX, pivotY);
   ctx.scale(groupScale, groupScale);
-  ctx.translate(-width / 2, -height / 2);
+  ctx.translate(-pivotX, -pivotY);
 
   if (MIRROR_VIEW) {
     ctx.translate(width, 0);
@@ -603,7 +645,7 @@ function drawPersonLayerScaled(groupScale = 1) {
   ctx.restore();
 }
 
-function drawDoorScaled(doorScale, alpha, groupScale = 1) {
+function drawDoorScaled(doorScale, alpha, offsetY = 0) {
   if (!doorImage.complete) return;
 
   const { width, height } = getStageSize();
@@ -612,17 +654,11 @@ function drawDoorScaled(doorScale, alpha, groupScale = 1) {
   const doorH = doorW * (doorImage.height / doorImage.width);
 
   const x = width / 2 - doorW / 2;
-  const y = height / 2 - doorH / 2;
+  const y = height / 2 - doorH / 2 + offsetY;
 
   ctx.save();
-
-  ctx.translate(width / 2, height / 2);
-  ctx.scale(groupScale, groupScale);
-  ctx.translate(-width / 2, -height / 2);
-
   ctx.globalAlpha = alpha;
   ctx.drawImage(doorImage, x, y, doorW, doorH);
-
   ctx.restore();
 }
 
