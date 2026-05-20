@@ -1,0 +1,203 @@
+1. 주술 영역 완성
+2. 화면에 여러 절단선이 빠르게 그어짐
+3. 화면 전체가 불규칙 조각으로 벌어짐
+4. 조각난 주술 효과가 붉은 연기처럼 증발
+5. 같은 조각 모양 안에서 일반 캠 화면이 드러남
+6. 최종적으로 아무 효과 없는 일반 캠 화면이 토막난 상태로 유지
+단계별 로직
+1단계. 주술 영역 최종 화면 유지
+
+현재 FINAL 단계가 이 역할을 해.
+
+붉은 안개
+문 이미지
+붉은 물
+
+이 화면을 잠깐 멈춰서 보여줘.
+
+추천 시간:
+
+const MAGIC_HOLD_DURATION = 600;
+
+역할:
+
+“이제 절단이 시작된다”는 준비 장면
+2단계. 여러 절단선 빠르게 긋기
+
+이 단계에서는 아직 화면을 조각내지 않고,
+완성된 주술 영역 화면 위에 절단선만 촤촤촥 그어지게 해.
+
+추천 phase 이름:
+
+SLASH_DRAW
+
+추천 시간:
+
+const SLASH_DRAW_DURATION = 450;
+
+화면 느낌:
+
+검붉은 선
+밝은 붉은 하이라이트
+여러 방향의 사선
+짧고 빠른 칼자국
+
+로직:
+
+주술 영역 화면 그대로 그림
+→ 절단선 progress에 따라 선 길이 증가
+→ 선 주변에 붉은 빛/검은 틈 살짝 표시
+3단계. 화면 전체가 불규칙 조각으로 벌어짐
+
+여기서부터 진짜 “토막난 화면”이 시작돼.
+
+추천 phase 이름:
+
+SLICE_SPLIT
+
+추천 시간:
+
+const SLICE_SPLIT_DURATION = 700;
+
+핵심 로직:
+
+주술 영역 최종 화면을 magicCanvas에 캡처
+→ 불규칙 조각 데이터 생성
+→ magicCanvas를 조각별로 잘라서 다시 그림
+→ 조각마다 다른 방향으로 조금씩 이동
+→ 조각 사이에는 검붉은 틈을 그림
+
+중요한 점:
+
+캠만 조각나는 게 아니라,
+캔버스에 그려진 주술 영역 전체가 조각남
+
+즉, 문, 안개, 물까지 같이 잘려 보여.
+
+4단계. 주술 효과가 붉은 연기처럼 증발
+
+여기가 네가 마음에 들어 한 핵심 전환이야.
+
+추천 phase 이름:
+
+MAGIC_DISSOLVE
+
+추천 시간:
+
+const MAGIC_DISSOLVE_DURATION = 900;
+
+화면 느낌:
+
+조각난 주술 화면은 그대로 유지
+→ 문/물/안개가 조각 표면에서 타듯이 사라짐
+→ 붉은 연기처럼 흩어짐
+→ 아래에서 일반 캠 조각이 드러남
+
+구현 로직:
+
+magicCanvas = 주술 효과 포함 화면
+realityCanvas = 아무 효과 없는 일반 캠 화면
+
+같은 조각 모양 사용
+아래에는 realityCanvas 조각을 그림
+위에는 magicCanvas 조각을 그림
+
+magic alpha: 1 → 0
+reality alpha: 0 → 1
+절단선/틈은 계속 유지
+
+즉, 조각의 위치와 모양은 그대로 두고,
+조각 안의 내용만 주술 화면에서 일반 캠으로 바뀌는 구조야.
+
+5단계. 토막난 일반 캠 최종 고정
+
+추천 phase 이름:
+
+SLICED_REALITY_FINAL
+
+이 단계에서는 특수효과가 없어.
+
+문 없음
+붉은 물 없음
+붉은 안개 없음
+일반 캠만 있음
+
+하지만 조각난 상태는 유지돼.
+
+화면 구조:
+
+조각난 일반 캠 화면
++ 조각 사이 검은/붉은 틈
++ 희미한 절단선 흔적
+전체 phase 구조
+
+기존:
+
+FOG_IN
+→ FOG_HOLD
+→ DOOR_REVEAL
+→ DOOR_HOLD
+→ ZOOM_OUT
+→ FINAL
+
+이제 확장하면:
+
+FOG_IN
+→ FOG_HOLD
+→ DOOR_REVEAL
+→ DOOR_HOLD
+→ ZOOM_OUT
+→ MAGIC_HOLD
+→ SLASH_DRAW
+→ SLICE_SPLIT
+→ MAGIC_DISSOLVE
+→ SLICED_REALITY_FINAL
+필요한 새 캔버스
+
+다음 구현에서 필요한 임시 캔버스는 2개야.
+
+const magicCanvas = document.createElement('canvas');
+const magicCtx = magicCanvas.getContext('2d');
+
+const realityCanvas = document.createElement('canvas');
+const realityCtx = realityCanvas.getContext('2d');
+
+역할:
+
+magicCanvas
+= 문, 물, 안개가 포함된 주술 영역 화면 저장
+
+realityCanvas
+= 아무 효과 없는 일반 캠 화면 저장
+필요한 새 데이터
+
+조각 정보를 저장할 배열이 필요해.
+
+let slicePieces = [];
+let sliceCaptured = false;
+
+조각 하나에는 이런 정보가 들어가면 돼.
+
+조각 모양 points
+이동 방향 dx, dy
+약간의 회전 rotation
+구현 순서 추천
+
+바로 코드로 들어갈 때는 이 순서가 좋아.
+
+1. phase 시간 상수 추가
+2. getSequencePhase() 확장
+3. magicCanvas / realityCanvas 추가
+4. 최종 주술 화면 캡처 함수 만들기
+5. 일반 캠 캡처 함수 만들기
+6. 불규칙 조각 데이터 만들기
+7. drawSlashLines(t) 만들기
+8. drawSlicedScene(sourceCanvas, t) 만들기
+9. MAGIC_DISSOLVE에서 magic/reality 크로스페이드
+핵심 컨셉 한 줄
+주술 영역이 화면을 베고,
+베인 조각 표면의 주술 효과가 증발하면서,
+그 아래의 현실 캠이 토막난 채 드러난다.
+
+이 구조로 가면 지금 고민했던
+“주술 화면에서 일반 캠으로 어떻게 자연스럽게 넘어가지?” 문제가 꽤 자연스럽게 해결돼.
