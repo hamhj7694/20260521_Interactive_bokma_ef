@@ -135,6 +135,8 @@ let latestHands = [];
 let segmenter = null;
 let isSegmentationProcessing = false;
 let segmentationReady = false;
+let lastSegmentationTime = 0;
+const SEGMENTATION_INTERVAL = 100;
 
 let cameraReady = false;
 
@@ -156,9 +158,16 @@ let doorFalseFrameCount = 0;
 let oneHandGestureStartTime = null;
 let oneHandGestureHoldProgress = 0;
 
+let lastChargeEnergyTime = 0;
+const CHARGE_ENERGY_GRACE_TIME = 250;
+
 const DOOR_OFF_FRAME_THRESHOLD = 8;
 const ONE_HAND_HOLD_DURATION = 2000;
 
+let resetGestureStartTime = null;
+let resetGestureHoldProgress = 0;
+
+const RESET_HOLD_DURATION = 1000;
 // =====================================================
 // 9. Hand Landmark Settings
 // =====================================================
@@ -209,6 +218,13 @@ init();
 async function init() {
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
+  window.addEventListener('keydown', handleKeyDown);
+
+  function handleKeyDown(event) {
+    if (event.key.toLowerCase() === 'r') {
+      resetEffect();
+    }
+  }
 
   await loadScriptIfNeeded(
     'Hands',
@@ -304,18 +320,73 @@ function setupSegmentation() {
 function renderLoop() {
   processHands();
 
-  // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
-  // if (sceneState === STATE_SEQUENCE || sceneState === STATE_FINAL) {
-  //   processSegmentation();
-  // }
-
   evaluateGesture();
 
   if (sceneState === STATE_NORMAL) {
     drawCoverVideo();
+
     drawHands();
   } else {
     drawSequenceScene();
+  }
+
+  function drawHandChargeEnergy(progress = 0) {
+    const activeHand =
+      latestHands.find(hand => hand.label === 'Left' && rawLeftGestureActive) ||
+      latestHands.find(hand => hand.label === 'Right' && rawRightGestureActive) ||
+      latestHands[0];
+
+    if (!activeHand || !activeHand.points?.length) return;
+
+    const center = getHandCenter(activeHand.points);
+    const time = performance.now() * 0.001;
+
+    const radius =
+      42 +
+      progress * 72 +
+      Math.sin(time * 8) * 5;
+
+    const alpha =
+      0.14 +
+      progress * 0.42;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+
+    const gradient = ctx.createRadialGradient(
+      center.x,
+      center.y,
+      0,
+      center.x,
+      center.y,
+      radius
+    );
+
+    gradient.addColorStop(0, `rgba(255, 80, 60, ${alpha})`);
+    gradient.addColorStop(0.45, `rgba(180, 0, 0, ${alpha * 0.45})`);
+    gradient.addColorStop(1, 'rgba(80, 0, 0, 0)');
+
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function getHandCenter(points) {
+    let x = 0;
+    let y = 0;
+
+    points.forEach(point => {
+      x += point.x;
+      y += point.y;
+    });
+
+    return {
+      x: x / points.length,
+      y: y / points.length,
+    };
   }
 
   drawDebugPanel();
@@ -482,6 +553,15 @@ function processSegmentation() {
   });
 }
 
+// function processSegmentationThrottled() {
+//   const now = performance.now();
+
+//   if (now - lastSegmentationTime < SEGMENTATION_INTERVAL) return;
+
+//   lastSegmentationTime = now;
+//   processSegmentation();
+// }
+
 function makePersonLayer(results) {
   const sourceW = video.videoWidth || 1280;
   const sourceH = video.videoHeight || 720;
@@ -534,11 +614,32 @@ function evaluateGesture() {
   updateOneHandHoldState(oneHandGestureActive);
 }
 
+function resetEffect() {
+  sceneState = STATE_NORMAL;
+  sequenceStartedAt = null;
+  sequenceTriggered = false;
+
+  slashLines = [];
+  slashLinesGenerated = false;
+
+  sliceSourceCaptured = false;
+  slicePieces = [];
+  slicePiecesGenerated = false;
+
+  oneHandGestureStartTime = null;
+  oneHandGestureHoldProgress = 0;
+  doorFalseFrameCount = 0;
+
+  resetGestureStartTime = null;
+  resetGestureHoldProgress = 0;
+}
+
 function updateOneHandHoldState(oneHandGestureActive) {
   const now = performance.now();
 
   if (oneHandGestureActive) {
     doorFalseFrameCount = 0;
+    lastChargeEnergyTime = performance.now();
 
     if (oneHandGestureStartTime === null) {
       oneHandGestureStartTime = now;
@@ -1285,6 +1386,12 @@ function generateSlicePieces() {
       const centerY =
         (topLeft.y + topRight.y + bottomRight.y + bottomLeft.y) / 4;
 
+      const distanceFromScreenCenter =
+        Math.hypot(
+          centerX - width * 0.5,
+          centerY - height * 0.5
+        );
+
       // 조각이 흩어질 방향을 상/하/좌/우 중 랜덤 선택
       const splitDirection = randomChoice([
         { x: -1, y: 0 }, // 왼쪽
@@ -1326,9 +1433,19 @@ function generateSlicePieces() {
         dy: dirY * pushAmount + randomPushY,
         rotation: rotationAmount,
         burnSeed: randomRange(0, 1000),
+        centerDistance: distanceFromScreenCenter,
       });
     }
   }
+
+  const maxDistance = Math.max(
+    ...pieces.map(piece => piece.centerDistance)
+  );
+
+  pieces.forEach(piece => {
+    piece.distanceRatio =
+      piece.centerDistance / maxDistance;
+  });
 
   return pieces;
 }
@@ -1429,7 +1546,19 @@ function drawMagicDissolveToReality(progress = 1) {
   const dissolveT = Math.max(0, Math.min(1, progress));
 
   slicePieces.forEach((piece) => {
-    drawDustDissolvePiece(piece, dissolveT);
+    const startDelay =
+      (1 - piece.distanceRatio) * 0.7;
+
+    const localT =
+      Math.max(
+        0,
+        Math.min(
+          1,
+          (dissolveT - startDelay) / 0.3
+        )
+      );
+
+    drawDustDissolvePiece(piece, localT);
   });
 }
 
@@ -1491,6 +1620,7 @@ function drawSingleSlicedPiece(sourceCanvas, piece, splitProgress = 1, alpha = 1
   ctx.restore();
 }
 
+// 조각난 영역 --> 일반 캠 전환
 function drawDustDissolvePiece(piece, progress = 1) {
   const { width, height } = getStageSize();
 
@@ -1507,7 +1637,7 @@ function drawDustDissolvePiece(piece, progress = 1) {
   const pieceSize = Math.max(bounds.width, bounds.height);
 
   // 조각 가장자리부터 서서히 안쪽으로 무너지는 깊이
-  const dissolveInset = pieceSize * dissolveProgress * 0.72;
+  const dissolveInset = pieceSize * dissolveProgress * 0.2;
 
   const dissolvedPoints = makeDissolvedPolygonPoints(
     piece.points,
@@ -1855,6 +1985,59 @@ function drawPersonLayerScaled(groupScale = 1, pivotYRatio = 0.5) {
 
   ctx.restore();
 }
+
+// function drawPersonRedAura(progress = 0) {
+//   if (!segmentationReady) return;
+//   if (!personCanvas.width || !personCanvas.height) return;
+
+//   const { width } = getStageSize();
+//   const rect = getVideoDrawRect();
+
+//   const time = performance.now() * 0.001;
+//   const glowAlpha = 0.18 + progress * 0.45;
+//   const blurSize = 8 + progress * 18 + Math.sin(time * 8) * 2;
+
+//   ctx.save();
+
+//   ctx.globalCompositeOperation = 'lighter';
+//   ctx.filter = `blur(${blurSize}px)`;
+//   ctx.globalAlpha = glowAlpha;
+
+//   // drawPersonCanvasMirrored(rect, width);
+
+//   ctx.filter = 'none';
+//   ctx.globalAlpha = 0.35 + progress * 0.45;
+//   ctx.shadowColor = 'rgba(255, 30, 20, 0.9)';
+//   ctx.shadowBlur = 18 + progress * 24;
+
+//   // drawPersonCanvasMirrored(rect, width);
+
+//   ctx.restore();
+// }
+
+// function drawPersonCanvasMirrored(rect, stageWidth) {
+//   if (MIRROR_VIEW) {
+//     ctx.save();
+//     ctx.translate(stageWidth, 0);
+//     ctx.scale(-1, 1);
+//     ctx.drawImage(
+//       personCanvas,
+//       stageWidth - rect.x - rect.width,
+//       rect.y,
+//       rect.width,
+//       rect.height
+//     );
+//     ctx.restore();
+//   } else {
+//     ctx.drawImage(
+//       personCanvas,
+//       rect.x,
+//       rect.y,
+//       rect.width,
+//       rect.height
+//     );
+//   }
+// }
 
 function drawDoorScaled(doorScale, alpha, offsetY = 0) {
   if (!doorImage.complete) return;
