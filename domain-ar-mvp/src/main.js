@@ -95,8 +95,16 @@ const FRONT_WATER_DOOR_RELATIVE_Y = 1;
 const SLASH_DELAY_STEP = 0.055;
 
 const STATE_NORMAL = 'NORMAL';
-const STATE_SEQUENCE = 'SEQUENCE';
+const STATE_BOKMA = 'BOKMA';
+const STATE_PUGA = 'PUGA';
 const STATE_FINAL = 'FINAL';
+
+const TECHNIQUE_NONE = null;
+const TECHNIQUE_BOKMA = 'BOKMA';
+const TECHNIQUE_PUGA = 'PUGA';
+
+let activeTechnique = TECHNIQUE_NONE;
+let techniqueStartedAt = null;
 
 let sceneState = STATE_NORMAL;
 let sequenceStartedAt = null;
@@ -133,6 +141,8 @@ let latestHands = [];
 let segmenter = null;
 let isSegmentationProcessing = false;
 let segmentationReady = false;
+let lastSegmentationTime = 0;
+const SEGMENTATION_INTERVAL = 100;
 
 let cameraReady = false;
 
@@ -155,7 +165,10 @@ let oneHandGestureStartTime = null;
 let oneHandGestureHoldProgress = 0;
 
 const DOOR_OFF_FRAME_THRESHOLD = 8;
-const ONE_HAND_HOLD_DURATION = 2000;
+const ONE_HAND_HOLD_DURATION = 3000;
+
+const BOKMA_BORDER_HOLD_AFTER_START_DURATION = 1000;
+const BOKMA_BORDER_FADE_DURATION = 500;
 
 // =====================================================
 // 9. Hand Landmark Settings
@@ -202,6 +215,13 @@ init();
 async function init() {
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
+  window.addEventListener('keydown', handleKeyDown);
+
+  function handleKeyDown(event) {
+    if (event.key.toLowerCase() === 'r') {
+      resetEffect();
+    }
+  }
 
   await loadScriptIfNeeded(
     'Hands',
@@ -297,18 +317,20 @@ function setupSegmentation() {
 function renderLoop() {
   processHands();
 
-  // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
-  // if (sceneState === STATE_SEQUENCE || sceneState === STATE_FINAL) {
-  //   processSegmentation();
-  // }
-
   evaluateGesture();
 
   if (sceneState === STATE_NORMAL) {
     drawCoverVideo();
+    if (rawDoorGestureActive) {
+      drawBokmaChargeBorder(oneHandGestureHoldProgress);
+    }
     drawHands();
-  } else {
-    drawSequenceScene();
+  } else if (sceneState === STATE_BOKMA) {
+    drawBokmaSequence();
+  } else if (sceneState === STATE_PUGA) {
+    drawPugaSequence();
+  } else if (sceneState === STATE_FINAL) {
+    drawSlicedRealityScene();
   }
 
   drawDebugPanel();
@@ -475,6 +497,15 @@ function processSegmentation() {
   });
 }
 
+// function processSegmentationThrottled() {
+//   const now = performance.now();
+
+//   if (now - lastSegmentationTime < SEGMENTATION_INTERVAL) return;
+
+//   lastSegmentationTime = now;
+//   processSegmentation();
+// }
+
 function makePersonLayer(results) {
   const sourceW = video.videoWidth || 1280;
   const sourceH = video.videoHeight || 720;
@@ -527,6 +558,28 @@ function evaluateGesture() {
   updateOneHandHoldState(oneHandGestureActive);
 }
 
+function resetEffect() {
+  sceneState = STATE_NORMAL;
+  sequenceStartedAt = null;
+  sequenceTriggered = false;
+
+  // 18-1. 복마어주자 초기화
+  slashLines = [];
+  slashLinesGenerated = false;
+
+  sliceSourceCaptured = false;
+  slicePieces = [];
+  slicePiecesGenerated = false;
+
+  // 공통 게이지 초기화
+  oneHandGestureStartTime = null;
+  oneHandGestureHoldProgress = 0;
+  doorFalseFrameCount = 0;
+
+  activeTechnique = TECHNIQUE_NONE;
+  techniqueStartedAt = null;
+}
+
 function updateOneHandHoldState(oneHandGestureActive) {
   const now = performance.now();
 
@@ -545,7 +598,7 @@ function updateOneHandHoldState(oneHandGestureActive) {
     );
 
     if (elapsed >= ONE_HAND_HOLD_DURATION) {
-      startDoorSequence();
+      startBokmaSequence();
     }
 
     return;
@@ -598,14 +651,15 @@ function isFingerFoldedVertical(landmarks, finger) {
 }
 
 // =====================================================
-// 17. Sequence / Door Scene
+// 17. Sequence
 // =====================================================
-
-function startDoorSequence() {
+// 17-1. 스쿠나 복마어주자
+// -----------------------------------------------------
+function startBokmaSequence() {
   if (sequenceTriggered) return;
 
   sequenceTriggered = true;
-  sceneState = STATE_SEQUENCE;
+  sceneState = STATE_BOKMA;
   sequenceStartedAt = performance.now();
 
   // 절단선은 시퀀스마다 한 번만 랜덤 생성되도록 초기화
@@ -616,16 +670,19 @@ function startDoorSequence() {
   sliceSourceCaptured = false;
   slicePieces = [];
   slicePiecesGenerated = false;
+
+  activeTechnique = TECHNIQUE_BOKMA;
+  techniqueStartedAt = performance.now();
 }
 
-function drawSequenceScene() {
+function drawBokmaSequence() {
   const { width, height } = getStageSize();
 
   ctx.clearRect(0, 0, width, height);
 
   const now = performance.now();
   const elapsed = now - sequenceStartedAt;
-  const phase = getSequencePhase(elapsed);
+  const phase = getBokmaPhase(elapsed);
 
   // 화면 높이 기준 문 시작 위치
   // const doorRevealStartOffsetY =
@@ -645,10 +702,19 @@ function drawSequenceScene() {
     drawCoverVideo();
     drawFogBackground(t);
 
-    // 연출 > 인물 누끼 관련 주석 처리(필요시 주석 해제)
-    // if (segmentationReady) {
-    //   drawPersonLayerScaled(1, 0.5);
-    // }
+  if (elapsed < BOKMA_BORDER_HOLD_AFTER_START_DURATION) {
+    drawBokmaChargeBorder(1);
+  } else {
+    const fadeElapsed =
+      elapsed - BOKMA_BORDER_HOLD_AFTER_START_DURATION;
+
+    const fadeProgress = Math.min(
+      fadeElapsed / BOKMA_BORDER_FADE_DURATION,
+      1
+    );
+
+    drawBokmaChargeBorder(1, 1 - fadeProgress);
+  }
 
     return;
   }
@@ -826,7 +892,7 @@ if (phase === 'MAGIC_DISSOLVE') {
 drawSlicedRealityScene();
 }
 
-function getSequencePhase(elapsed) {
+function getBokmaPhase(elapsed) {
   const t1 = FOG_IN_DURATION;
   const t2 = t1 + FOG_HOLD_DURATION;
   const t3 = t2 + DOOR_REVEAL_DURATION;
@@ -854,9 +920,65 @@ function getSequencePhase(elapsed) {
   return 'FINAL';
 }
 
+// -----------------------------------------------------
+// 17-2. 스쿠나 푸가 
+// -----------------------------------------------------
+function startPugaSequence() {}
+function drawPugaSequence() {}
+function getPugaPhase(elapsed) {}
+
 // =====================================================
 // 18. Drawing Effects
 // =====================================================
+// 18-1.  스쿠나 복마어주자
+// -----------------------------------------------------
+
+function drawBokmaChargeBorder(progress = 0, alphaMultiplier = 1) {
+  const { width, height } = getStageSize();
+  const time = performance.now() * 0.001;
+
+  const t = Math.max(0, Math.min(1, progress));
+  const pulse = 0.85 + Math.sin(time * 5) * 0.15;
+
+  const alpha = (0.55 + t * 0.4) * pulse * alphaMultiplier;
+  const edgeSize = 90 + t * 50;
+
+  ctx.save();
+
+  // 상단
+  let gradient = ctx.createLinearGradient(0, 0, 0, edgeSize);
+  gradient.addColorStop(0, `rgba(0, 0, 0, ${alpha})`);
+  gradient.addColorStop(0.35, `rgba(80, 0, 0, ${alpha * 0.65})`);
+  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, edgeSize);
+
+  // 하단
+  gradient = ctx.createLinearGradient(0, height, 0, height - edgeSize);
+  gradient.addColorStop(0, `rgba(0, 0, 0, ${alpha})`);
+  gradient.addColorStop(0.35, `rgba(80, 0, 0, ${alpha * 0.65})`);
+  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, height - edgeSize, width, edgeSize);
+
+  // 좌측
+  gradient = ctx.createLinearGradient(0, 0, edgeSize, 0);
+  gradient.addColorStop(0, `rgba(0, 0, 0, ${alpha})`);
+  gradient.addColorStop(0.35, `rgba(80, 0, 0, ${alpha * 0.65})`);
+  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, edgeSize, height);
+
+  // 우측
+  gradient = ctx.createLinearGradient(width, 0, width - edgeSize, 0);
+  gradient.addColorStop(0, `rgba(0, 0, 0, ${alpha})`);
+  gradient.addColorStop(0.35, `rgba(80, 0, 0, ${alpha * 0.65})`);
+  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(width - edgeSize, 0, edgeSize, height);
+
+  ctx.restore();
+}
 
 function drawFogBackground(intensity = 1) {
   const { width, height } = getStageSize();
@@ -1272,6 +1394,21 @@ function generateSlicePieces() {
 
       if (!topLeft || !topRight || !bottomRight || !bottomLeft) continue;
 
+<<<<<<< HEAD
+=======
+      const centerX =
+        (topLeft.x + topRight.x + bottomRight.x + bottomLeft.x) / 4;
+
+      const centerY =
+        (topLeft.y + topRight.y + bottomRight.y + bottomLeft.y) / 4;
+
+      const distanceFromScreenCenter =
+        Math.hypot(
+          centerX - width * 0.5,
+          centerY - height * 0.5
+        );
+
+>>>>>>> main
       // 조각이 흩어질 방향을 상/하/좌/우 중 랜덤 선택
       const splitDirection = randomChoice([
         { x: -1, y: 0 }, // 왼쪽
@@ -1313,9 +1450,19 @@ function generateSlicePieces() {
         dy: dirY * pushAmount + randomPushY,
         rotation: rotationAmount,
         burnSeed: randomRange(0, 1000),
+        centerDistance: distanceFromScreenCenter,
       });
     }
   }
+
+  const maxDistance = Math.max(
+    ...pieces.map(piece => piece.centerDistance)
+  );
+
+  pieces.forEach(piece => {
+    piece.distanceRatio =
+      piece.centerDistance / maxDistance;
+  });
 
   return pieces;
 }
@@ -1416,7 +1563,23 @@ function drawMagicDissolveToReality(progress = 1) {
   const dissolveT = Math.max(0, Math.min(1, progress));
 
   slicePieces.forEach((piece) => {
+<<<<<<< HEAD
     drawEdgeDustDissolvePiece(piece, dissolveT);
+=======
+    const startDelay =
+      (1 - piece.distanceRatio) * 0.7;
+
+    const localT =
+      Math.max(
+        0,
+        Math.min(
+          1,
+          (dissolveT - startDelay) / 0.3
+        )
+      );
+
+    drawDustDissolvePiece(piece, localT);
+>>>>>>> main
   });
 }
 
@@ -1478,7 +1641,12 @@ function drawSingleSlicedPiece(sourceCanvas, piece, splitProgress = 1, alpha = 1
   ctx.restore();
 }
 
+<<<<<<< HEAD
 function drawEdgeDustDissolvePiece(piece, progress = 1) {
+=======
+// 조각난 영역 --> 일반 캠 전환
+function drawDustDissolvePiece(piece, progress = 1) {
+>>>>>>> main
   const { width, height } = getStageSize();
   const dpr = window.devicePixelRatio || 1;
 
@@ -1511,8 +1679,13 @@ function drawEdgeDustDissolvePiece(piece, progress = 1) {
   dissolveCtx.rotate(rotation);
   dissolveCtx.translate(-center.x, -center.y);
 
+<<<<<<< HEAD
   dissolveCtx.beginPath();
   dissolveCtx.moveTo(piece.points[0].x, piece.points[0].y);
+=======
+  // 조각 가장자리부터 서서히 안쪽으로 무너지는 깊이
+  const dissolveInset = pieceSize * dissolveProgress * 0.2;
+>>>>>>> main
 
   for (let i = 1; i < piece.points.length; i += 1) {
     dissolveCtx.lineTo(piece.points[i].x, piece.points[i].y);
@@ -2381,6 +2554,59 @@ function drawPersonLayerScaled(groupScale = 1, pivotYRatio = 0.5) {
   ctx.restore();
 }
 
+// function drawPersonRedAura(progress = 0) {
+//   if (!segmentationReady) return;
+//   if (!personCanvas.width || !personCanvas.height) return;
+
+//   const { width } = getStageSize();
+//   const rect = getVideoDrawRect();
+
+//   const time = performance.now() * 0.001;
+//   const glowAlpha = 0.18 + progress * 0.45;
+//   const blurSize = 8 + progress * 18 + Math.sin(time * 8) * 2;
+
+//   ctx.save();
+
+//   ctx.globalCompositeOperation = 'lighter';
+//   ctx.filter = `blur(${blurSize}px)`;
+//   ctx.globalAlpha = glowAlpha;
+
+//   // drawPersonCanvasMirrored(rect, width);
+
+//   ctx.filter = 'none';
+//   ctx.globalAlpha = 0.35 + progress * 0.45;
+//   ctx.shadowColor = 'rgba(255, 30, 20, 0.9)';
+//   ctx.shadowBlur = 18 + progress * 24;
+
+//   // drawPersonCanvasMirrored(rect, width);
+
+//   ctx.restore();
+// }
+
+// function drawPersonCanvasMirrored(rect, stageWidth) {
+//   if (MIRROR_VIEW) {
+//     ctx.save();
+//     ctx.translate(stageWidth, 0);
+//     ctx.scale(-1, 1);
+//     ctx.drawImage(
+//       personCanvas,
+//       stageWidth - rect.x - rect.width,
+//       rect.y,
+//       rect.width,
+//       rect.height
+//     );
+//     ctx.restore();
+//   } else {
+//     ctx.drawImage(
+//       personCanvas,
+//       rect.x,
+//       rect.y,
+//       rect.width,
+//       rect.height
+//     );
+//   }
+// }
+
 function drawDoorScaled(doorScale, alpha, offsetY = 0) {
   if (!doorImage.complete) return;
 
@@ -2482,6 +2708,11 @@ function drawHandLabel(points, label) {
   ctx.restore();
 }
 
+// -----------------------------------------------------
+// 18-2.  스쿠나 푸가
+// -----------------------------------------------------
+
+
 // =====================================================
 // 19. Debug
 // =====================================================
@@ -2495,8 +2726,8 @@ function drawDebugPanel() {
   const leftHand = latestHands.find((hand) => hand.label === 'Left');
 
   const phase =
-    sceneState === STATE_SEQUENCE && sequenceStartedAt
-      ? getSequencePhase(performance.now() - sequenceStartedAt)
+    sceneState === STATE_BOKMA && sequenceStartedAt
+      ? getBokmaPhase(performance.now() - sequenceStartedAt)
       : sceneState;
 
   const lines = [
@@ -2511,6 +2742,7 @@ function drawDebugPanel() {
     `false frames: ${doorFalseFrameCount}`,
     `sequenceTriggered: ${sequenceTriggered}`,
     `sceneState: ${sceneState}`,
+    `activeTechnique: ${activeTechnique}`,
     `phase: ${phase}`,
     `segmentationReady: ${segmentationReady}`,
     `door image loaded: ${doorImage.complete}`,
