@@ -12,7 +12,7 @@ const ctx = canvas.getContext('2d');
 // 2. Global Settings
 // =====================================================
 
-const DEBUG = true;
+const DEBUG = false;
 const MIRROR_VIEW = true;
 
 // =====================================================
@@ -41,9 +41,8 @@ const SLASH_DRAW_DURATION = 650; // 절단선이 빠르게 그어지는 시간
 const SLASH_HOLD_DURATION = 300; // 균열선 유지 시간
 const SLICE_SPLIT_DURATION = 850; // 균열선을 기준으로 화면 조각들이 벌어지는 시간
 
-// 조각 테두리부터 주술 영역이 타들어가고, 아래에서 일반 캠이 드러남
 const SLICED_MAGIC_HOLD_DURATION = 1000; // 조각난 주술 영역 유지 시간
-const MAGIC_DISSOLVE_DURATION = 2800; // 주술 영역이 타들어가며 사라지는 시간
+const MAGIC_DISSOLVE_DURATION = 5200; // 주술 영역이 테두리부터 가루처럼 사라지는 시간
 
 // =====================================================
 // 5. Door / Person Scene Settings
@@ -76,10 +75,6 @@ const PERSON_FINAL_PIVOT_Y = 0.75;
 // 전경 붉은 물 최종 진하기
 const FRONT_WATER_FINAL_ALPHA = 1;
 
-// 전경 붉은 물 세로 위치
-// 0.8 = 화면 아래쪽, 숫자가 작을수록 위로 올라감
-const FRONT_WATER_Y_RATIO = 0.8;
-
 // 전경 붉은 물 높이
 const FRONT_WATER_HEIGHT_RATIO = 0.16;
 
@@ -97,7 +92,6 @@ const FRONT_WATER_DOOR_RELATIVE_Y = 1;
 // =====================================================
 
 // 절단선 연출 설정
-const SLASH_LINE_WIDTH = 2.2;
 const SLASH_DELAY_STEP = 0.055;
 
 const STATE_NORMAL = 'NORMAL';
@@ -131,6 +125,10 @@ let slicePiecesGenerated = false;
 // 조각난 일반 캠 전환용 캔버스
 const realityCanvas = document.createElement('canvas');
 const realityCtx = realityCanvas.getContext('2d');
+
+// 테두리 가루화 마스크용 임시 캔버스
+const dissolveCanvas = document.createElement('canvas');
+const dissolveCtx = dissolveCanvas.getContext('2d');
 
 // =====================================================
 // 7. MediaPipe / Segmentation State
@@ -186,11 +184,6 @@ const HAND_CONNECTIONS = [
 ];
 
 const FINGER = {
-  thumb: {
-    tip: 4,
-    ip: 3,
-    mcp: 2,
-  },
   index: {
     tip: 8,
     pip: 6,
@@ -1401,6 +1394,8 @@ function generateSlicePieces() {
 
       if (!topLeft || !topRight || !bottomRight || !bottomLeft) continue;
 
+<<<<<<< HEAD
+=======
       const centerX =
         (topLeft.x + topRight.x + bottomRight.x + bottomLeft.x) / 4;
 
@@ -1413,6 +1408,7 @@ function generateSlicePieces() {
           centerY - height * 0.5
         );
 
+>>>>>>> main
       // 조각이 흩어질 방향을 상/하/좌/우 중 랜덤 선택
       const splitDirection = randomChoice([
         { x: -1, y: 0 }, // 왼쪽
@@ -1563,10 +1559,13 @@ function drawMagicDissolveToReality(progress = 1) {
   // 1) 아래에는 일반 캠 조각을 먼저 그림
   drawSlicedSceneFromCanvas(realityCanvas, 1, 1, false);
 
-  // 2) 위에는 주술 영역 조각을 테두리부터 줄어드는 마스크로 그림
+  // 2) 위에는 주술 영역 조각을 올리고, 외곽 → 중앙 순서로 재처럼 제거함
   const dissolveT = Math.max(0, Math.min(1, progress));
 
   slicePieces.forEach((piece) => {
+<<<<<<< HEAD
+    drawEdgeDustDissolvePiece(piece, dissolveT);
+=======
     const startDelay =
       (1 - piece.distanceRatio) * 0.7;
 
@@ -1580,6 +1579,7 @@ function drawMagicDissolveToReality(progress = 1) {
       );
 
     drawDustDissolvePiece(piece, localT);
+>>>>>>> main
   });
 }
 
@@ -1641,9 +1641,30 @@ function drawSingleSlicedPiece(sourceCanvas, piece, splitProgress = 1, alpha = 1
   ctx.restore();
 }
 
+<<<<<<< HEAD
+function drawEdgeDustDissolvePiece(piece, progress = 1) {
+=======
 // 조각난 영역 --> 일반 캠 전환
 function drawDustDissolvePiece(piece, progress = 1) {
+>>>>>>> main
   const { width, height } = getStageSize();
+  const dpr = window.devicePixelRatio || 1;
+
+  const t = Math.max(0, Math.min(1, progress));
+
+  // 후반부에는 잔상/반동 없이 깔끔하게 제거
+  if (t >= 0.985) return;
+
+  const targetW = Math.floor(width * dpr);
+  const targetH = Math.floor(height * dpr);
+
+  if (dissolveCanvas.width !== targetW || dissolveCanvas.height !== targetH) {
+    dissolveCanvas.width = targetW;
+    dissolveCanvas.height = targetH;
+  }
+
+  dissolveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  dissolveCtx.clearRect(0, 0, width, height);
 
   const center = getPieceCenter(piece.points);
 
@@ -1651,44 +1672,33 @@ function drawDustDissolvePiece(piece, progress = 1) {
   const moveY = piece.dy;
   const rotation = piece.rotation;
 
-  const dissolveProgress = Math.max(0, Math.min(1, progress));
-  if (dissolveProgress >= 0.88) return;
+  // 1) 임시 캔버스에 주술 영역 조각을 먼저 그림
+  dissolveCtx.save();
 
-  const bounds = getPieceBounds(piece.points);
-  const pieceSize = Math.max(bounds.width, bounds.height);
+  dissolveCtx.translate(center.x + moveX, center.y + moveY);
+  dissolveCtx.rotate(rotation);
+  dissolveCtx.translate(-center.x, -center.y);
 
+<<<<<<< HEAD
+  dissolveCtx.beginPath();
+  dissolveCtx.moveTo(piece.points[0].x, piece.points[0].y);
+=======
   // 조각 가장자리부터 서서히 안쪽으로 무너지는 깊이
   const dissolveInset = pieceSize * dissolveProgress * 0.2;
+>>>>>>> main
 
-  const dissolvedPoints = makeDissolvedPolygonPoints(
-    piece.points,
-    center,
-    dissolveInset,
-    dissolveProgress,
-    piece.burnSeed || 0,
-  );
-
-  ctx.save();
-
-  ctx.translate(center.x + moveX, center.y + moveY);
-  ctx.rotate(rotation);
-  ctx.translate(-center.x, -center.y);
-
-  // 남아 있는 주술 조각 영역
-  ctx.beginPath();
-  ctx.moveTo(dissolvedPoints[0].x, dissolvedPoints[0].y);
-
-  for (let i = 1; i < dissolvedPoints.length; i += 1) {
-    ctx.lineTo(dissolvedPoints[i].x, dissolvedPoints[i].y);
+  for (let i = 1; i < piece.points.length; i += 1) {
+    dissolveCtx.lineTo(piece.points[i].x, piece.points[i].y);
   }
 
-  ctx.closePath();
-  ctx.clip();
+  dissolveCtx.closePath();
+  dissolveCtx.clip();
 
-  // 후반으로 갈수록 조용히 투명해짐
-  ctx.globalAlpha = Math.pow(Math.max(0, 1 - dissolveProgress), 1.6);
+  // 너무 빨리 투명해지지 않게 약한 페이드만 적용   
+  const lateFadeT = Math.max(0, Math.min(1, (t - 0.82) / 0.18));
+  dissolveCtx.globalAlpha = 1 - smoothstep(lateFadeT) * 0.95;
 
-  ctx.drawImage(
+  dissolveCtx.drawImage(
     sliceSourceCanvas,
     0,
     0,
@@ -1700,114 +1710,53 @@ function drawDustDissolvePiece(piece, progress = 1) {
     height,
   );
 
-  ctx.restore();
+  // 2) 외곽 → 중앙 순서로 영역 이미지를 재처럼 지워나감
+  dissolveCtx.globalAlpha = 1;
+  dissolveCtx.globalCompositeOperation = 'destination-out';
+  erasePieceAsSoftVaporBands(dissolveCtx, piece, t);
 
-  // 가장자리 잔상과 가루 입자
-  // drawDissolveEdge(piece, dissolvedPoints, dissolveProgress);
-  drawDustParticles(piece, dissolvedPoints, dissolveProgress);
-}
+  dissolveCtx.restore();
 
-function drawDissolveEdge(piece, points, progress = 1) {
-  const center = getPieceCenter(piece.points);
+  // 3) 완성된 주술 조각만 메인 캔버스에 얹음
+  // 아래에는 이미 현실 캠 조각이 그려져 있으므로,
+  // 지워진 부분으로 현실 캠이 바로 드러남
+  ctx.drawImage(
+    dissolveCanvas,
+    0,
+    0,
+    dissolveCanvas.width,
+    dissolveCanvas.height,
+    0,
+    0,
+    width,
+    height,
+  );
 
-  const moveX = piece.dx;
-  const moveY = piece.dy;
-  const rotation = piece.rotation;
+  // 구멍 대신 균열이 생기고, 작은 파편이 무너지는 느낌
+  // drawEdgeCracks(piece, t);
+  // drawEdgeFragments(piece, t);
 
-  const edgeAlpha =
-    progress < 0.96
-      ? Math.sin(progress * Math.PI) * 0.45
-      : 0;
-
-  if (edgeAlpha <= 0) return;
-
-  ctx.save();
-
-  ctx.translate(center.x + moveX, center.y + moveY);
-  ctx.rotate(rotation);
-  ctx.translate(-center.x, -center.y);
-
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-
-  // 검은 탄 자국이 아니라, 흐릿한 재/먼지 경계
-  ctx.strokeStyle = `rgba(35, 28, 30, ${0.42 * edgeAlpha})`;
-  ctx.lineWidth = 7;
-  drawClosedPolyline(points);
-
-  ctx.strokeStyle = `rgba(150, 115, 105, ${0.18 * edgeAlpha})`;
-  ctx.lineWidth = 2.2;
-  drawClosedPolyline(points);
-
-  ctx.strokeStyle = `rgba(210, 190, 175, ${0.1 * edgeAlpha})`;
-  ctx.lineWidth = 1;
-  drawClosedPolyline(points);
-
-  ctx.restore();
-}
-
-function makeDissolvedPolygonPoints(points, center, inset, progress, seed = 0) {
-  const result = [];
-  const samplesPerEdge = 16;
-
-  for (let i = 0; i < points.length; i += 1) {
-    const a = points[i];
-    const b = points[(i + 1) % points.length];
-
-    for (let s = 0; s < samplesPerEdge; s += 1) {
-      const t = s / samplesPerEdge;
-
-      const x = lerp(a.x, b.x, t);
-      const y = lerp(a.y, b.y, t);
-
-      const dx = center.x - x;
-      const dy = center.y - y;
-      const len = Math.hypot(dx, dy) || 1;
-
-      const nx = dx / len;
-      const ny = dy / len;
-
-      // 불규칙하게 가장자리가 부서지는 느낌
-      const noiseA = Math.sin(
-        x * 0.023 +
-        y * 0.031 +
-        seed * 0.71 +
-        progress * 4.2,
-      );
-
-      const noiseB = Math.sin(
-        x * 0.061 -
-        y * 0.047 +
-        seed * 1.13 +
-        progress * 7.7,
-      );
-
-      const noise = noiseA * 0.6 + noiseB * 0.4;
-
-      // 너무 튀지 않게 거칠기 제한
-      const roughness = 3 + progress * 10;
-      const localInset = inset + noise * roughness;
-
-      result.push({
-        x: x + nx * localInset,
-        y: y + ny * localInset,
-      });
-    }
+  // 원본 영역 이미지 조각이 위로 흩날려 날아가는 연출
+  // drawImageAshFragments(piece, t);
+  if (piece.burnSeed % 1 > 0.45) {
+    drawSoftVaporMist(piece, t);
   }
-
-  return result;
 }
 
-function drawDustParticles(piece, edgePoints, progress = 1) {
-  if (progress <= 0.08 || progress >= 0.82) return;
+function drawSoftVaporMist(piece, progress = 1) {
+  if (progress <= 0.08 || progress >= 0.92) return;
 
   const center = getPieceCenter(piece.points);
+  const bounds = getPieceBounds(piece.points);
+  const pieceSize = Math.max(bounds.width, bounds.height);
+  const seed = piece.burnSeed || 0;
 
   const moveX = piece.dx;
   const moveY = piece.dy;
   const rotation = piece.rotation;
 
-  const particleAlpha = Math.sin(progress * Math.PI) * 0.48;
+  const mistAlpha = Math.sin(progress * Math.PI) * 0.06;
+  const mistCount = 2;
 
   ctx.save();
 
@@ -1815,72 +1764,670 @@ function drawDustParticles(piece, edgePoints, progress = 1) {
   ctx.rotate(rotation);
   ctx.translate(-center.x, -center.y);
 
-  // 가루는 많으면 싼티남. 적고 작게.
-  const step = Math.max(1, Math.floor(edgePoints.length / 18));
+  for (let i = 0; i < mistCount; i += 1) {
+    const randA = pseudoRandom(seed + i * 41);
+    const randB = pseudoRandom(seed + i * 67);
+    const randC = pseudoRandom(seed + i * 89);
 
-  for (let i = 0; i < edgePoints.length; i += step) {
-    const p = edgePoints[i];
+    const angle = randA * Math.PI * 2;
+    const distance = pieceSize * (0.15 + randB * 0.28);
 
-    const seed = piece.burnSeed || 0;
+    const baseX = center.x + Math.cos(angle) * distance;
+    const baseY = center.y + Math.sin(angle) * distance;
 
-    const n1 = pseudoRandom(i * 13.17 + seed * 0.31);
-    const n2 = pseudoRandom(i * 27.91 + seed * 0.47);
-    const n3 = pseudoRandom(i * 41.73 + seed * 0.59);
+    const driftX =
+      Math.sin(progress * 5 + randA * Math.PI * 2) *
+      (10 + randB * 22);
 
-    // 위로 날리되, 좌우로 살짝 흩어짐
-    const driftX = (n1 - 0.5) * 44 * progress;
-    const driftY = -progress * (26 + n2 * 42);
+    const driftY =
+      -progress *
+      (16 + randC * 32);
 
-    // 후반부에는 더 퍼지면서 흐려짐
-    const spreadX = (n3 - 0.5) * progress * 24;
+    const x = baseX + driftX;
+    const y = baseY + driftY;
 
-    const size = 0.6 + n2 * 1.7;
+    const radius = 28 + randB * 50;
 
-    const alpha = particleAlpha * (1 - progress * 0.35);
+    const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+    gradient.addColorStop(0, `rgba(90, 90, 90, ${mistAlpha})`);
+    gradient.addColorStop(0.5, `rgba(55, 55, 55, ${mistAlpha * 0.4})`);
+    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
-    // 어두운 재 입자
-    ctx.fillStyle = `rgba(55, 48, 48, ${0.36 * alpha})`;
+    ctx.fillStyle = gradient;
     ctx.beginPath();
-    ctx.arc(
-      p.x + driftX + spreadX,
-      p.y + driftY,
-      size,
-      0,
-      Math.PI * 2,
-    );
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
-
-    // 아주 약한 붉은 잔광. 과하지 않게.
-    // if (n1 > 0.68) {
-    //   ctx.fillStyle = `rgba(160, 70, 55, ${0.12 * alpha})`;
-    //   ctx.beginPath();
-    //   ctx.arc(
-    //     p.x + driftX * 0.8,
-    //     p.y + driftY * 0.8,
-    //     size * 0.7,
-    //     0,
-    //     Math.PI * 2,
-    //   );
-    //   ctx.fill();
-    // }
   }
 
   ctx.restore();
 }
 
-function drawClosedPolyline(points) {
-  if (!points.length) return;
+// function drawEdgeCracks(piece, progress = 1) {
+//   if (progress <= 0.05 || progress >= 0.95) return;
 
-  ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
+//   const center = getPieceCenter(piece.points);
+//   const seed = piece.burnSeed || 0;
 
-  for (let i = 1; i < points.length; i += 1) {
-    ctx.lineTo(points[i].x, points[i].y);
-  }
+//   const moveX = piece.dx;
+//   const moveY = piece.dy;
+//   const rotation = piece.rotation;
 
-  ctx.closePath();
-  ctx.stroke();
+//   const crackAlpha = Math.sin(progress * Math.PI) * 0.42;
+//   const cracksPerEdge = 8;
+
+//   ctx.save();
+
+//   ctx.translate(center.x + moveX, center.y + moveY);
+//   ctx.rotate(rotation);
+//   ctx.translate(-center.x, -center.y);
+
+//   ctx.lineCap = 'butt';
+//   ctx.lineJoin = 'miter';
+//   ctx.strokeStyle = `rgba(12, 6, 7, ${crackAlpha})`;
+//   ctx.lineWidth = 1;
+
+//   piece.points.forEach((a, edgeIndex) => {
+//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
+
+//     for (let i = 0; i < cracksPerEdge; i += 1) {
+//       const randA = pseudoRandom(seed + edgeIndex * 101 + i * 17);
+//       const randB = pseudoRandom(seed + edgeIndex * 173 + i * 23);
+//       const randC = pseudoRandom(seed + edgeIndex * 211 + i * 31);
+
+//       const start = randA * 0.28;
+//       const localT = Math.max(0, Math.min(1, (progress - start) / 0.58));
+
+//       if (localT <= 0) continue;
+
+//       const edgeT = (i + 0.5) / cracksPerEdge;
+
+//       const edgeX = lerp(a.x, b.x, edgeT);
+//       const edgeY = lerp(a.y, b.y, edgeT);
+
+//       const toCenterX = center.x - edgeX;
+//       const toCenterY = center.y - edgeY;
+//       const len = Math.hypot(toCenterX, toCenterY) || 1;
+
+//       const normalX = toCenterX / len;
+//       const normalY = toCenterY / len;
+
+//       const crackLength = 8 + randB * 24 * localT;
+//       const sideBend = (randC - 0.5) * 10;
+
+//       const startX = edgeX;
+//       const startY = edgeY;
+
+//       const endX =
+//         edgeX +
+//         normalX * crackLength +
+//         -normalY * sideBend;
+
+//       const endY =
+//         edgeY +
+//         normalY * crackLength +
+//         normalX * sideBend;
+
+//       ctx.beginPath();
+//       ctx.moveTo(startX, startY);
+//       ctx.lineTo(endX, endY);
+//       ctx.stroke();
+
+//       // 짧은 보조 균열
+//       if (randB > 0.58) {
+//         const branchT = 0.45 + randA * 0.25;
+//         const branchX = lerp(startX, endX, branchT);
+//         const branchY = lerp(startY, endY, branchT);
+
+//         ctx.beginPath();
+//         ctx.moveTo(branchX, branchY);
+//         ctx.lineTo(
+//           branchX + -normalY * (4 + randC * 8),
+//           branchY + normalX * (4 + randC * 8),
+//         );
+//         ctx.stroke();
+//       }
+//     }
+//   });
+
+//   ctx.restore();
+// }
+
+// function drawEdgeFragments(piece, progress = 1) {
+//   if (progress <= 0.04 || progress >= 0.9) return;
+
+//   const { width, height } = getStageSize();
+
+//   const center = getPieceCenter(piece.points);
+//   const seed = piece.burnSeed || 0;
+
+//   const moveX = piece.dx;
+//   const moveY = piece.dy;
+//   const rotation = piece.rotation;
+
+//   const fragmentAlpha = Math.sin(progress * Math.PI) * 0.22;
+//   const fragmentsPerEdge = 5;
+
+//   ctx.save();
+
+//   ctx.translate(center.x + moveX, center.y + moveY);
+//   ctx.rotate(rotation);
+//   ctx.translate(-center.x, -center.y);
+
+//   piece.points.forEach((a, edgeIndex) => {
+//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
+
+//     for (let i = 0; i < fragmentsPerEdge; i += 1) {
+//       const randA = pseudoRandom(seed + edgeIndex * 101 + i * 17);
+//       const randB = pseudoRandom(seed + edgeIndex * 173 + i * 23);
+//       const randC = pseudoRandom(seed + edgeIndex * 211 + i * 31);
+
+//       const start = randA * 0.36;
+//       const localT = Math.max(0, Math.min(1, (progress - start) / 0.56));
+
+//       if (localT <= 0 || localT >= 1) continue;
+
+//       const edgeT = (i + 0.5) / fragmentsPerEdge;
+
+//       const edgeX = lerp(a.x, b.x, edgeT);
+//       const edgeY = lerp(a.y, b.y, edgeT);
+
+//       const toCenterX = center.x - edgeX;
+//       const toCenterY = center.y - edgeY;
+//       const len = Math.hypot(toCenterX, toCenterY) || 1;
+
+//       const normalX = toCenterX / len;
+//       const normalY = toCenterY / len;
+
+//       // 파편이 바깥쪽으로 살짝 떨어지고 아래로 무너지는 느낌
+//       const fallX = -normalX * localT * (8 + randB * 18) + (randA - 0.5) * 16;
+//       const fallY = localT * (10 + randC * 28);
+
+//       const fragW = 3 + randB * 5;
+//       const fragH = 2 + randC * 4;
+//       const angle = (randA - 0.5) * 1.1 + localT * (randB - 0.5) * 1.5;
+
+//       ctx.save();
+
+//       ctx.translate(edgeX + fallX, edgeY + fallY);
+//       ctx.rotate(angle);
+
+//       ctx.beginPath();
+//       ctx.rect(-fragW / 2, -fragH / 2, fragW, fragH);
+//       ctx.clip();
+
+//       ctx.globalAlpha = fragmentAlpha * (1 - localT);
+
+//       // 파편 자체는 원본 영역 이미지에서 잘려 나온 것처럼 보이게 함
+//       ctx.drawImage(
+//         sliceSourceCanvas,
+//         0,
+//         0,
+//         sliceSourceCanvas.width,
+//         sliceSourceCanvas.height,
+//         0,
+//         0,
+//         width,
+//         height,
+//       );
+
+//       ctx.restore();
+//     }
+//   });
+
+//   ctx.restore();
+// }
+
+//회색 점 가루 날아가는 함수
+// function drawAshBandParticles(piece, progress = 1) {
+//   if (progress <= 0.04 || progress >= 0.96) return;
+
+//   const center = getPieceCenter(piece.points);
+//   const bounds = getPieceBounds(piece.points);
+//   const pieceSize = Math.max(bounds.width, bounds.height);
+//   const seed = piece.burnSeed || 0;
+
+//   const moveX = piece.dx;
+//   const moveY = piece.dy;
+//   const rotation = piece.rotation;
+
+//   const bandCount = 7;
+//   const particlesPerEdge = 7;
+//   const totalDepth = pieceSize * 0.5;
+
+//   ctx.save();
+
+//   ctx.translate(center.x + moveX, center.y + moveY);
+//   ctx.rotate(rotation);
+//   ctx.translate(-center.x, -center.y);
+
+//   piece.points.forEach((a, edgeIndex) => {
+//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
+
+//     for (let s = 0; s < particlesPerEdge; s += 1) {
+//       const edgeT = (s + 0.5) / particlesPerEdge;
+
+//       const edgeX = lerp(a.x, b.x, edgeT);
+//       const edgeY = lerp(a.y, b.y, edgeT);
+
+//       const toCenterX = center.x - edgeX;
+//       const toCenterY = center.y - edgeY;
+//       const len = Math.hypot(toCenterX, toCenterY) || 1;
+
+//       const normalX = toCenterX / len;
+//       const normalY = toCenterY / len;
+
+//       for (let band = 0; band < bandCount; band += 1) {
+//         const randA = pseudoRandom(seed + edgeIndex * 41 + s * 7 + band * 11);
+//         const randB = pseudoRandom(seed + edgeIndex * 67 + s * 13 + band * 17);
+//         const randC = pseudoRandom(seed + edgeIndex * 89 + s * 19 + band * 23);
+
+//         // band 0 = 가장 바깥, 숫자가 커질수록 안쪽
+//         const bandStart = (band / bandCount) * 0.78 + randA * 0.035;
+//         const bandDuration = 0.22;
+
+//         const localT = Math.max(
+//           0,
+//           Math.min(1, (progress - bandStart) / bandDuration),
+//         );
+
+//         if (localT <= 0 || localT >= 1) continue;
+
+//         const bandFrom = totalDepth * (band / bandCount);
+//         const bandTo = totalDepth * ((band + 1) / bandCount);
+//         const depth = lerp(bandFrom, bandTo, localT);
+
+//         const baseX = edgeX + normalX * depth;
+//         const baseY = edgeY + normalY * depth;
+
+//         // 위로 흩날리는 움직임
+//         const riseY = localT * (16 + randC * 42);
+//         const spreadX = (randB - 0.5) * (10 + localT * 26);
+
+//         // 바람/난기류처럼 흔들림
+//         const swirlX =
+//           Math.sin(localT * 5.4 + randA * Math.PI * 2) * (4 + randB * 8);
+
+//         const swirlY =
+//           Math.cos(localT * 4.2 + randC * Math.PI * 2) * (1.5 + randA * 3.5);
+
+//         const x = baseX + spreadX + swirlX;
+//         const y = baseY - riseY + swirlY;
+
+//         const size = 0.45 + randA * 1.35;
+//         const alpha = (1 - localT) * (0.08 + randB * 0.14);
+
+//         const grayBase = 42 + Math.floor(randC * 26);
+//         const r = grayBase + 8;
+//         const g = grayBase + 4;
+//         const bColor = grayBase + 2;
+
+//         ctx.fillStyle = `rgba(${r}, ${g}, ${bColor}, ${alpha})`;
+//         ctx.beginPath();
+//         ctx.arc(x, y, size, 0, Math.PI * 2);
+//         ctx.fill();
+//       }
+//     }
+//   });
+
+//   ctx.restore();
+// }
+
+// 원본 이미지 조각이 가루처럼 되어서 흩날리는 버전
+
+// function drawImageAshFragments(piece, progress = 1) {
+//   if (progress <= 0.04 || progress >= 0.98) return;
+
+//   const center = getPieceCenter(piece.points);
+//   const bounds = getPieceBounds(piece.points);
+//   const pieceSize = Math.max(bounds.width, bounds.height);
+//   const seed = piece.burnSeed || 0;
+
+//   const moveX = piece.dx;
+//   const moveY = piece.dy;
+//   const rotation = piece.rotation;
+
+//   const bandCount = 7;
+//   const fragmentsPerEdge = 7;
+//   const totalDepth = pieceSize * 0.52;
+
+//   ctx.save();
+
+//   ctx.translate(center.x + moveX, center.y + moveY);
+//   ctx.rotate(rotation);
+//   ctx.translate(-center.x, -center.y);
+
+//   piece.points.forEach((a, edgeIndex) => {
+//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
+
+//     for (let s = 0; s < fragmentsPerEdge; s += 1) {
+//       const edgeT = (s + 0.5) / fragmentsPerEdge;
+
+//       const edgeX = lerp(a.x, b.x, edgeT);
+//       const edgeY = lerp(a.y, b.y, edgeT);
+
+//       const toCenterX = center.x - edgeX;
+//       const toCenterY = center.y - edgeY;
+//       const len = Math.hypot(toCenterX, toCenterY) || 1;
+
+//       const normalX = toCenterX / len;
+//       const normalY = toCenterY / len;
+
+//       for (let band = 0; band < bandCount; band += 1) {
+//         const randA = pseudoRandom(seed + edgeIndex * 41 + s * 7 + band * 11);
+//         const randB = pseudoRandom(seed + edgeIndex * 67 + s * 13 + band * 17);
+//         const randC = pseudoRandom(seed + edgeIndex * 89 + s * 19 + band * 23);
+
+//         // 바깥 → 안쪽 순서
+//         const bandStart = (band / bandCount) * 0.78 + randA * 0.035;
+//         const bandDuration = 0.22;
+
+//         const localT = Math.max(
+//           0,
+//           Math.min(1, (progress - bandStart) / bandDuration),
+//         );
+
+//         if (localT <= 0 || localT >= 1) continue;
+
+//         const bandFrom = totalDepth * (band / bandCount);
+//         const bandTo = totalDepth * ((band + 1) / bandCount);
+//         const depth = lerp(bandFrom, bandTo, localT);
+
+//         // 조각이 생성되는 원래 위치
+//         const baseX = edgeX + normalX * depth;
+//         const baseY = edgeY + normalY * depth;
+
+//         // ===== 위로 흩날리는 움직임 =====
+//         const riseY = localT * (18 + randC * 44);
+//         const spreadX = (randB - 0.5) * (12 + localT * 30);
+
+//         const swirlX =
+//           Math.sin(localT * 5.5 + randA * Math.PI * 2) * (4 + randB * 8);
+
+//         const swirlY =
+//           Math.cos(localT * 4.3 + randC * Math.PI * 2) * (1.5 + randA * 3.5);
+
+//         const x = baseX + spreadX + swirlX;
+//         const y = baseY - riseY + swirlY;
+
+//         // ===== 실제 이미지 조각 크기 =====
+//         const fragW = 1.8 + randA * 4.2;
+//         const fragH = 1.2 + randB * 3.4;
+
+//         // 원본에서 샘플링할 영역
+//         const srcW = fragW * 1.8;
+//         const srcH = fragH * 1.8;
+//         const srcX = baseX - srcW / 2;
+//         const srcY = baseY - srcH / 2;
+
+//         const fragRotation =
+//           (randC - 0.5) * 1.2 + localT * (randB - 0.5) * 1.1;
+
+//         const alpha = (1 - localT) * (0.16 + randA * 0.24);
+
+//         ctx.save();
+
+//         ctx.globalAlpha = alpha;
+//         ctx.translate(x, y);
+//         ctx.rotate(fragRotation);
+
+//         // 잘게 잘린 원본 이미지 조각처럼 보이게
+//         ctx.beginPath();
+//         ctx.rect(-fragW / 2, -fragH / 2, fragW, fragH);
+//         ctx.clip();
+
+//         ctx.drawImage(
+//           sliceSourceCanvas,
+//           srcX,
+//           srcY,
+//           srcW,
+//           srcH,
+//           -fragW / 2,
+//           -fragH / 2,
+//           fragW,
+//           fragH,
+//         );
+
+//         ctx.restore();
+//       }
+//     }
+//   });
+
+//   ctx.restore();
+// }
+
+// function erasePieceAsAshBands(targetCtx, piece, progress = 1) {
+//   const center = getPieceCenter(piece.points);
+//   const bounds = getPieceBounds(piece.points);
+//   const pieceSize = Math.max(bounds.width, bounds.height);
+//   const seed = piece.burnSeed || 0;
+
+//   // 외곽 → 중앙까지 몇 단계로 사라질지
+//   const bandCount = 8;
+
+//   // 각 변에서 얼마나 촘촘히 샘플링할지
+//   const samplesPerEdge = 22;
+
+//   // 조각 중심 방향으로 얼마나 깊게 들어갈지
+//   const totalDepth = pieceSize * 0.58;
+
+//   piece.points.forEach((a, edgeIndex) => {
+//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
+
+//     for (let s = 0; s <= samplesPerEdge; s += 1) {
+//       const edgeT = s / samplesPerEdge;
+
+//       const edgeX = lerp(a.x, b.x, edgeT);
+//       const edgeY = lerp(a.y, b.y, edgeT);
+
+//       const toCenterX = center.x - edgeX;
+//       const toCenterY = center.y - edgeY;
+//       const len = Math.hypot(toCenterX, toCenterY) || 1;
+
+//       const normalX = toCenterX / len;
+//       const normalY = toCenterY / len;
+
+//       for (let band = 0; band < bandCount; band += 1) {
+//         const randA = pseudoRandom(seed + edgeIndex * 101 + s * 17 + band * 13);
+//         const randB = pseudoRandom(seed + edgeIndex * 173 + s * 23 + band * 19);
+//         const randC = pseudoRandom(seed + edgeIndex * 211 + s * 31 + band * 29);
+
+//         // band 0 = 가장 바깥쪽
+//         // band가 커질수록 중앙 쪽
+//         const bandStart = (band / bandCount) * 0.78 + randA * 0.035;
+//         const bandDuration = 0.2;
+
+//         const localT = Math.max(
+//           0,
+//           Math.min(1, (progress - bandStart) / bandDuration),
+//         );
+
+//         if (localT <= 0) continue;
+
+//         const bandFrom = totalDepth * (band / bandCount);
+//         const bandTo = totalDepth * ((band + 1) / bandCount);
+
+//         const depth = lerp(bandFrom, bandTo, localT);
+
+//         const jitterX = (randB - 0.5) * 6;
+//         const jitterY = (randC - 0.5) * 6;
+
+//         const x = edgeX + normalX * depth + jitterX;
+//         const y = edgeY + normalY * depth + jitterY;
+
+//         // 재처럼 작게 흩어지는 침식 모양
+//         const radiusX = 0.8 + randB * 2.8;
+//         const radiusY = 0.6 + randC * 2.2;
+//         const rot = randA * Math.PI;
+
+//         targetCtx.save();
+//         targetCtx.translate(x, y);
+//         targetCtx.rotate(rot);
+
+//         targetCtx.beginPath();
+//         targetCtx.ellipse(0, 0, radiusX, radiusY, 0, 0, Math.PI * 2);
+//         targetCtx.fill();
+
+//         targetCtx.restore();
+//       }
+//     }
+//   });
+// }
+
+function smoothstep(t) {
+  const v = Math.max(0, Math.min(1, t));
+  return v * v * (3 - 2 * v);
 }
+
+function erasePieceAsSoftVaporBands(targetCtx, piece, progress = 1) {
+  const center = getPieceCenter(piece.points);
+  const bounds = getPieceBounds(piece.points);
+  const pieceSize = Math.max(bounds.width, bounds.height);
+  const seed = piece.burnSeed || 0;
+
+  const bandCount = 5;
+  const samplesPerEdge = 5;
+  const totalDepth = pieceSize * 0.62;
+
+  targetCtx.save();
+
+  // 핵심: 점처럼 뚫리지 않고, 부드럽게 깎이게
+  targetCtx.filter = 'blur(5px)';
+
+  piece.points.forEach((a, edgeIndex) => {
+    const b = piece.points[(edgeIndex + 1) % piece.points.length];
+
+    for (let s = 0; s <= samplesPerEdge; s += 1) {
+      const edgeT = s / samplesPerEdge;
+
+      const edgeX = lerp(a.x, b.x, edgeT);
+      const edgeY = lerp(a.y, b.y, edgeT);
+
+      const toCenterX = center.x - edgeX;
+      const toCenterY = center.y - edgeY;
+      const len = Math.hypot(toCenterX, toCenterY) || 1;
+
+      const normalX = toCenterX / len;
+      const normalY = toCenterY / len;
+
+      for (let band = 0; band < bandCount; band += 1) {
+        const randA = pseudoRandom(seed + edgeIndex * 97 + s * 17 + band * 11);
+        const randB = pseudoRandom(seed + edgeIndex * 131 + s * 23 + band * 19);
+        const randC = pseudoRandom(seed + edgeIndex * 167 + s * 31 + band * 29);
+
+        // 바깥 band부터 안쪽 band 순서로 진행
+        const bandStart = (band / bandCount) * 0.74 + randA * 0.03;
+        const bandDuration = 0.28;
+
+        const localT = Math.max(
+          0,
+          Math.min(1, (progress - bandStart) / bandDuration),
+        );
+
+        if (localT <= 0) continue;
+
+        const eased = smoothstep(localT);
+
+        const bandFrom = totalDepth * (band / bandCount);
+        const bandTo = totalDepth * ((band + 1) / bandCount);
+        const depth = lerp(bandFrom, bandTo, eased);
+
+        const x =
+          edgeX +
+          normalX * depth +
+          (randB - 0.5) * 10;
+
+        const y =
+          edgeY +
+          normalY * depth +
+          (randC - 0.5) * 10 -
+          eased * (6 + randA * 12);
+
+        // 작고 많은 구멍 느낌이 아니라,
+        // 크고 흐린 침식 덩어리로 지움
+        const radiusX = 10 + randB * 18;
+        const radiusY = 7 + randC * 14;
+        const rot = randA * Math.PI;
+
+        targetCtx.globalAlpha = 0.18 + eased * 0.32;
+
+        targetCtx.save();
+        targetCtx.translate(x, y);
+        targetCtx.rotate(rot);
+
+        targetCtx.beginPath();
+        targetCtx.ellipse(0, 0, radiusX, radiusY, 0, 0, Math.PI * 2);
+        targetCtx.fill();
+
+        targetCtx.restore();
+      }
+    }
+  });
+
+  targetCtx.filter = 'none';
+  targetCtx.restore();
+}
+
+// function drawEdgeDustParticles(piece, progress = 1) {
+//   if (progress <= 0.08 || progress >= 0.84) return;
+
+//   const center = getPieceCenter(piece.points);
+
+//   const moveX = piece.dx;
+//   const moveY = piece.dy;
+//   const rotation = piece.rotation;
+
+//   const particleAlpha = Math.sin(progress * Math.PI) * 0.34;
+//   const samplesPerEdge = 9;
+//   const seed = piece.burnSeed || 0;
+
+//   ctx.save();
+
+//   ctx.translate(center.x + moveX, center.y + moveY);
+//   ctx.rotate(rotation);
+//   ctx.translate(-center.x, -center.y);
+
+//   piece.points.forEach((a, edgeIndex) => {
+//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
+
+//     for (let s = 0; s <= samplesPerEdge; s += 1) {
+//       const n = pseudoRandom(seed + edgeIndex * 59 + s * 17);
+
+//       // 입자가 너무 많아지지 않게 일부만 그림
+//       if (n < 0.45) continue;
+
+//       const edgeT = s / samplesPerEdge;
+
+//       const x = lerp(a.x, b.x, edgeT);
+//       const y = lerp(a.y, b.y, edgeT);
+
+//       const driftX =
+//         (pseudoRandom(seed + edgeIndex * 13 + s * 3) - 0.5) *
+//         28 *
+//         progress;
+
+//       const driftY =
+//         -progress *
+//         (10 + pseudoRandom(seed + edgeIndex * 7 + s * 19) * 24);
+
+//       const size =
+//         0.55 +
+//         pseudoRandom(seed + edgeIndex * 23 + s * 31) *
+//         1.35;
+
+//       const alpha =
+//         particleAlpha *
+//         (1 - progress * 0.45) *
+//         pseudoRandom(seed + edgeIndex * 41 + s * 5);
+
+//       ctx.fillStyle = `rgba(60, 55, 55, ${alpha})`;
+//       ctx.beginPath();
+//       ctx.arc(x + driftX, y + driftY, size, 0, Math.PI * 2);
+//       ctx.fill();
+//     }
+//   });
+
+//   ctx.restore();
+// }
 
 function getPieceBounds(points) {
   let minX = Infinity;
@@ -2145,7 +2692,6 @@ function drawHandLabel(points, label) {
 
   const text = label === 'Right' ? 'USER RIGHT' : 'USER LEFT';
   const paddingX = 8;
-  const paddingY = 5;
   const textW = ctx.measureText(text).width;
   const boxW = textW + paddingX * 2;
   const boxH = 26;
