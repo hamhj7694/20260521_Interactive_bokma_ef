@@ -96,6 +96,7 @@ const FRONT_WATER_DOOR_RELATIVE_Y = 1;
 // 6. Scene State
 // =====================================================
 
+// 6-1. 복마어주자 전용 변수
 // 절단선 연출 설정
 const SLASH_LINE_WIDTH = 2.2;
 const SLASH_DELAY_STEP = 0.055;
@@ -131,6 +132,13 @@ let slicePiecesGenerated = false;
 // 조각난 일반 캠 전환용 캔버스
 const realityCanvas = document.createElement('canvas');
 const realityCtx = realityCanvas.getContext('2d');
+
+//-----------------------------------------------------
+// 6-2. 푸가 전용 변수
+const PUGA_CONTEXT_NORMAL = 'NORMAL';
+const PUGA_CONTEXT_SLICED = 'SLICED';
+
+let pugaContext = PUGA_CONTEXT_NORMAL;
 
 // =====================================================
 // 7. MediaPipe / Segmentation State
@@ -171,6 +179,31 @@ const ONE_HAND_HOLD_DURATION = 3000;
 
 const BOKMA_BORDER_HOLD_AFTER_START_DURATION = 1000;
 const BOKMA_BORDER_FADE_DURATION = 500;
+
+//------------------------------------------------------
+// 푸가 신호 유지 판정
+const PUGA_SIGNAL_HOLD_DURATION = 500;
+const PUGA_OFF_FRAME_THRESHOLD = 10;
+
+let pugaSignalStartTime = null;
+let pugaSignalHoldProgress = 0;
+let pugaFalseFrameCount = 0;
+let rawPugaSignalActive = false;
+
+//-----------------------------------------------------
+// 푸가 단계 변수 추가
+const PUGA_STAGE_NONE = 0;
+const PUGA_STAGE_HAND_FLAME = 1;
+const PUGA_STAGE_FIRE_PILLAR = 2;
+
+let pugaStage = PUGA_STAGE_NONE;
+
+// const PUGA_HAND_TOUCH_DISTANCE_RATIO = 0.26; //푸가 1단계에 사용 안함
+const PUGA_HAND_SEPARATE_DISTANCE_RATIO = 0.22;
+
+//푸가 디버그 변수
+let pugaDebugReason = '';
+
 
 // =====================================================
 // 9. Hand Landmark Settings
@@ -338,6 +371,7 @@ function renderLoop() {
     drawPugaSequence();
   } else if (sceneState === STATE_FINAL) {
     drawSlicedRealityScene();
+    drawHands();
   }
 
   drawDebugPanel();
@@ -538,7 +572,10 @@ function makePersonLayer(results) {
 // =====================================================
 
 function evaluateGesture() {
-  if (sceneState !== STATE_NORMAL) return;
+  if (
+    sceneState !== STATE_NORMAL &&
+    sceneState !== STATE_FINAL
+  ) return;
 
   isLeftGestureActive = false;
   isRightGestureActive = false;
@@ -562,6 +599,30 @@ function evaluateGesture() {
 
   rawDoorGestureActive = oneHandGestureActive;
 
+  const pugaSignalActive =
+    isPugaSignalGesture(leftHand, rightHand);
+
+  rawPugaSignalActive = pugaSignalActive;
+
+  // FINAL, 즉 토막난 캠 상태에서는 푸가만 허용
+  if (sceneState === STATE_FINAL) {
+    updatePugaSignalHoldState(pugaSignalActive);
+    return;
+  }
+
+  // NORMAL 상태에서는 푸가 신호를 우선 판정
+  if (pugaSignalActive) {
+    updatePugaSignalHoldState(true);
+
+    // 푸가 신호가 잡히는 동안 복마 게이지는 초기화
+    oneHandGestureStartTime = null;
+    oneHandGestureHoldProgress = 0;
+    doorFalseFrameCount = 0;
+
+    return;
+  }
+
+  updatePugaSignalHoldState(false);
   updateOneHandHoldState(oneHandGestureActive);
 }
 
@@ -582,6 +643,14 @@ function resetEffect() {
   oneHandGestureStartTime = null;
   oneHandGestureHoldProgress = 0;
   doorFalseFrameCount = 0;
+
+  // 푸가 신호 초기화
+  pugaSignalStartTime = null;
+  pugaSignalHoldProgress = 0;
+  pugaFalseFrameCount = 0;
+  rawPugaSignalActive = false;
+  pugaContext = PUGA_CONTEXT_NORMAL;
+  pugaStage = PUGA_STAGE_NONE;
 
   activeTechnique = TECHNIQUE_NONE;
   techniqueStartedAt = null;
@@ -619,6 +688,38 @@ function updateOneHandHoldState(oneHandGestureActive) {
   }
 }
 
+function updatePugaSignalHoldState(pugaSignalActive) {
+  const now = performance.now();
+
+  if (pugaSignalActive) {
+    pugaFalseFrameCount = 0;
+
+    if (pugaSignalStartTime === null) {
+      pugaSignalStartTime = now;
+    }
+
+    const elapsed = now - pugaSignalStartTime;
+
+    pugaSignalHoldProgress = Math.min(
+      elapsed / PUGA_SIGNAL_HOLD_DURATION,
+      1,
+    );
+
+    if (elapsed >= PUGA_SIGNAL_HOLD_DURATION) {
+      startPugaSequence();
+    }
+
+    return;
+  }
+
+  pugaFalseFrameCount += 1;
+
+  if (pugaFalseFrameCount >= PUGA_OFF_FRAME_THRESHOLD) {
+    pugaSignalStartTime = null;
+    pugaSignalHoldProgress = 0;
+  }
+}
+
 function isDoorGesture(landmarks) {
   if (!landmarks || landmarks.length < 21) return false;
 
@@ -633,6 +734,191 @@ function isDoorGesture(landmarks) {
     ringFolded &&
     pinkyFolded
   );
+}
+
+function isPugaSignalGesture(leftHand, rightHand) {
+  pugaDebugReason = '';
+
+  if (!leftHand || !rightHand) {
+    pugaDebugReason = 'need two hands';
+    return false;
+  }
+
+  const leftCenter = getPalmCenter(leftHand.points);
+  const rightCenter = getPalmCenter(rightHand.points);
+
+  if (!leftCenter || !rightCenter) {
+    pugaDebugReason = 'no palm center';
+    return false;
+  }
+
+  const dx = Math.abs(leftCenter.x - rightCenter.x);
+  const dy = Math.abs(leftCenter.y - rightCenter.y);
+
+  const verticallyArranged = dy > dx * 0.45;
+
+  if (!verticallyArranged) {
+    pugaDebugReason = `not vertical dx:${Math.round(dx)} dy:${Math.round(dy)}`;
+    return false;
+  }
+
+  const leftFingerDirection = getFingerAimDirectionY(leftHand.points);
+  const rightFingerDirection = getFingerAimDirectionY(rightHand.points);
+
+  if (!leftFingerDirection || !rightFingerDirection) {
+    pugaDebugReason = `dir fail L:${leftFingerDirection} R:${rightFingerDirection}`;
+    return false;
+  }
+
+  const fingersFacingEachOther =
+    (
+      leftFingerDirection === 'DOWN' &&
+      rightFingerDirection === 'UP'
+    ) ||
+    (
+      leftFingerDirection === 'UP' &&
+      rightFingerDirection === 'DOWN'
+    );
+
+  if (!fingersFacingEachOther) {
+    pugaDebugReason = `not facing L:${leftFingerDirection} R:${rightFingerDirection}`;
+    return false;
+  }
+
+  const leftSoftCurl = isPugaVerySoftCurledHand(leftHand.landmarks);
+  const rightSoftCurl = isPugaVerySoftCurledHand(rightHand.landmarks);
+
+  if (!leftSoftCurl || !rightSoftCurl) {
+    pugaDebugReason = `curl fail L:${leftSoftCurl} R:${rightSoftCurl}`;
+    return false;
+  }
+
+  pugaDebugReason = 'ok';
+  return true;
+}
+
+function getFingerAimDirectionY(points) {
+  if (!points || points.length < 21) return null;
+
+  const tips = [
+    points[FINGER.index.tip],
+    points[FINGER.middle.tip],
+    points[FINGER.ring.tip],
+    points[FINGER.pinky.tip],
+  ].filter(Boolean);
+
+  const mcps = [
+    points[FINGER.index.mcp],
+    points[FINGER.middle.mcp],
+    points[FINGER.ring.mcp],
+    points[FINGER.pinky.mcp],
+  ].filter(Boolean);
+
+  if (tips.length < 4 || mcps.length < 4) return null;
+
+  const avgTipY =
+    tips.reduce((sum, point) => sum + point.y, 0) / tips.length;
+
+  const avgMcpY =
+    mcps.reduce((sum, point) => sum + point.y, 0) / mcps.length;
+
+  const deltaY = avgTipY - avgMcpY;
+
+  // 화면 좌표계: y가 커질수록 아래
+  // 기존 palmCenter 기준보다 훨씬 안정적.
+  const threshold = 10;
+
+  if (deltaY > threshold) return 'DOWN';
+  if (deltaY < -threshold) return 'UP';
+
+  return null;
+}
+
+function isPugaVerySoftCurledHand(landmarks) {
+  if (!landmarks || landmarks.length < 21) return false;
+
+  const softCurledCount = [
+    FINGER.index,
+    FINGER.middle,
+    FINGER.ring,
+    FINGER.pinky,
+  ].filter((finger) => {
+    return isFingerNotFullyStraight(landmarks, finger);
+  }).length;
+
+  // 테스트 1차: 1개만 살짝 말려도 인정
+  // 인식이 너무 쉬우면 2로 올리면 됨.
+  return softCurledCount >= 1;
+}
+
+function isFingerNotFullyStraight(landmarks, finger) {
+  const tip = landmarks[finger.tip];
+  const pip = landmarks[finger.pip];
+  const mcp = landmarks[finger.mcp];
+
+  if (!tip || !pip || !mcp) return false;
+
+  const tipToMcp = getLandmarkDistance(tip, mcp);
+  const pipToMcp = getLandmarkDistance(pip, mcp);
+
+  // 손가락이 완전히 쫙 펴져 있으면 tipToMcp가 pipToMcp보다 훨씬 김.
+  // 살짝이라도 말리면 이 비율이 줄어듦.
+  return tipToMcp < pipToMcp * 1.9;
+}
+
+function getLandmarkDistance(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = (a.z || 0) - (b.z || 0);
+
+  return Math.hypot(dx, dy, dz);
+}
+
+function isOpenHandGesture(landmarks) {
+  if (!landmarks || landmarks.length < 21) return false;
+
+  const indexExtended = isFingerExtendedVertical(landmarks, FINGER.index);
+  const middleExtended = isFingerExtendedVertical(landmarks, FINGER.middle);
+  const ringExtended = isFingerExtendedVertical(landmarks, FINGER.ring);
+  const pinkyExtended = isFingerExtendedVertical(landmarks, FINGER.pinky);
+
+  return (
+    indexExtended &&
+    middleExtended &&
+    ringExtended &&
+    pinkyExtended
+  );
+}
+
+function getPalmCenter(points) {
+  if (!points || points.length < 21) return null;
+
+  const wrist = points[0];
+  const indexMcp = points[5];
+  const middleMcp = points[9];
+  const ringMcp = points[13];
+  const pinkyMcp = points[17];
+
+  if (!wrist || !indexMcp || !middleMcp || !ringMcp || !pinkyMcp) {
+    return null;
+  }
+
+  return {
+    x: (
+      wrist.x +
+      indexMcp.x +
+      middleMcp.x +
+      ringMcp.x +
+      pinkyMcp.x
+    ) / 5,
+    y: (
+      wrist.y +
+      indexMcp.y +
+      middleMcp.y +
+      ringMcp.y +
+      pinkyMcp.y
+    ) / 5,
+  };
 }
 
 function isFingerExtendedVertical(landmarks, finger) {
@@ -699,6 +985,8 @@ function drawBokmaSequence() {
 
   if (phase === 'FINAL') {
     sceneState = STATE_FINAL;
+    activeTechnique = TECHNIQUE_NONE;
+    techniqueStartedAt = null;
   }
 
   // 0.0~1.2초: 기존 캠 화면 위에 붉은 안개가 서서히 덮이게 처리
@@ -930,8 +1218,75 @@ function getBokmaPhase(elapsed) {
 // -----------------------------------------------------
 // 17-2. 스쿠나 푸가 
 // -----------------------------------------------------
-function startPugaSequence() {}
-function drawPugaSequence() {}
+function startPugaSequence() {
+  if (activeTechnique !== TECHNIQUE_NONE) return;
+
+  pugaContext =
+    sceneState === STATE_FINAL
+      ? PUGA_CONTEXT_SLICED
+      : PUGA_CONTEXT_NORMAL;
+
+  sceneState = STATE_PUGA;
+  activeTechnique = TECHNIQUE_PUGA;
+
+  sequenceStartedAt = performance.now();
+  techniqueStartedAt = performance.now();
+
+  pugaStage = PUGA_STAGE_HAND_FLAME;
+
+  // 푸가 진입 순간 복마 게이지 초기화
+  oneHandGestureStartTime = null;
+  oneHandGestureHoldProgress = 0;
+  doorFalseFrameCount = 0;
+
+  pugaSignalStartTime = null;
+  pugaSignalHoldProgress = 0;
+  pugaFalseFrameCount = 0;
+}
+
+function drawPugaSequence() {
+  if (pugaContext === PUGA_CONTEXT_SLICED) {
+    drawSlicedRealityScene();
+  } else {
+    drawCoverVideo();
+  }
+
+  const leftHand = latestHands.find((hand) => hand.label === 'Left');
+  const rightHand = latestHands.find((hand) => hand.label === 'Right');
+
+  const leftCenter = leftHand ? getPalmCenter(leftHand.points) : null;
+  const rightCenter = rightHand ? getPalmCenter(rightHand.points) : null;
+
+  if (leftCenter) {
+    drawPugaHandFlame(leftCenter, 1);
+  }
+
+  if (rightCenter) {
+    drawPugaHandFlame(rightCenter, 1);
+  }
+
+  if (leftCenter && rightCenter) {
+    const distance = Math.hypot(
+      leftCenter.x - rightCenter.x,
+      leftCenter.y - rightCenter.y,
+    );
+
+    const { width, height } = getStageSize();
+    const separateDistance =
+      Math.min(width, height) * PUGA_HAND_SEPARATE_DISTANCE_RATIO;
+
+    if (distance > separateDistance) {
+      pugaStage = PUGA_STAGE_FIRE_PILLAR;
+    }
+
+    if (pugaStage >= PUGA_STAGE_FIRE_PILLAR) {
+      drawPugaFirePillar(leftCenter, rightCenter);
+    }
+  }
+
+  drawHands();
+}
+
 function getPugaPhase(elapsed) {}
 
 // =====================================================
@@ -2165,7 +2520,141 @@ function drawHandLabel(points, label) {
 // -----------------------------------------------------
 // 18-2.  스쿠나 푸가
 // -----------------------------------------------------
+function drawPugaHandFlame(center, intensity = 1) {
+  const time = performance.now() * 0.001;
 
+  ctx.save();
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i = 0; i < 9; i += 1) {
+    const angle =
+      time * 4.5 +
+      i * 0.9;
+
+    const radius =
+      18 +
+      Math.sin(time * 5 + i) * 6;
+
+    const x =
+      center.x +
+      Math.cos(angle) * radius * 0.45;
+
+    const y =
+      center.y -
+      12 -
+      Math.abs(Math.sin(angle)) * 18 -
+      i * 1.5;
+
+    const flameSize =
+      22 +
+      Math.sin(time * 8 + i) * 5;
+
+    const gradient = ctx.createRadialGradient(
+      x,
+      y,
+      0,
+      x,
+      y,
+      flameSize,
+    );
+
+    gradient.addColorStop(0, `rgba(255, 245, 170, ${0.65 * intensity})`);
+    gradient.addColorStop(0.35, `rgba(255, 95, 20, ${0.38 * intensity})`);
+    gradient.addColorStop(1, 'rgba(150, 0, 0, 0)');
+
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(x, y, flameSize, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawPugaFirePillar(start, end) {
+  const time = performance.now() * 0.001;
+
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+
+  const distance = Math.hypot(dx, dy);
+  if (distance < 1) return;
+
+  const angle = Math.atan2(dy, dx);
+
+  const centerX = (start.x + end.x) / 2;
+  const centerY = (start.y + end.y) / 2;
+
+  const pillarWidth = Math.min(90, Math.max(34, distance * 0.22));
+
+  ctx.save();
+
+  ctx.translate(centerX, centerY);
+  ctx.rotate(angle);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  // 바깥 불기둥
+  const outerGradient = ctx.createLinearGradient(
+    0,
+    -pillarWidth,
+    0,
+    pillarWidth,
+  );
+
+  outerGradient.addColorStop(0, 'rgba(160, 0, 0, 0)');
+  outerGradient.addColorStop(0.25, 'rgba(255, 60, 10, 0.35)');
+  outerGradient.addColorStop(0.5, 'rgba(255, 210, 70, 0.55)');
+  outerGradient.addColorStop(0.75, 'rgba(255, 60, 10, 0.35)');
+  outerGradient.addColorStop(1, 'rgba(160, 0, 0, 0)');
+
+  ctx.fillStyle = outerGradient;
+  ctx.beginPath();
+
+  const leftX = -distance / 2;
+  const rightX = distance / 2;
+
+  ctx.moveTo(leftX, 0);
+
+  for (let x = leftX; x <= rightX; x += 18) {
+    const wave =
+      Math.sin(x * 0.04 + time * 8) * 10 +
+      Math.sin(x * 0.09 - time * 6) * 5;
+
+    ctx.lineTo(x, -pillarWidth * 0.5 + wave);
+  }
+
+  for (let x = rightX; x >= leftX; x -= 18) {
+    const wave =
+      Math.sin(x * 0.05 - time * 7) * 10 +
+      Math.sin(x * 0.08 + time * 5) * 5;
+
+    ctx.lineTo(x, pillarWidth * 0.5 + wave);
+  }
+
+  ctx.closePath();
+  ctx.fill();
+
+  // 중심 고열 코어
+  ctx.strokeStyle = 'rgba(255, 245, 180, 0.75)';
+  ctx.lineWidth = Math.max(8, pillarWidth * 0.18);
+  ctx.lineCap = 'round';
+
+  ctx.beginPath();
+  ctx.moveTo(leftX, 0);
+
+  for (let x = leftX; x <= rightX; x += 16) {
+    const wave =
+      Math.sin(x * 0.05 + time * 10) * 5;
+
+    ctx.lineTo(x, wave);
+  }
+
+  ctx.stroke();
+
+  ctx.restore();
+}
 
 // =====================================================
 // 19. Debug
@@ -2185,21 +2674,11 @@ function drawDebugPanel() {
       : sceneState;
 
   const lines = [
-    `cameraReady: ${cameraReady}`,
-    `hands: ${latestHands.length}`,
-    `left hand detected: ${Boolean(leftHand)}`,
-    `right hand detected: ${Boolean(rightHand)}`,
-    `left gesture: ${rawLeftGestureActive}`,
-    `right gesture: ${rawRightGestureActive}`,
-    `one hand gesture: ${rawDoorGestureActive}`,
-    `hold progress: ${oneHandGestureHoldProgress.toFixed(2)}`,
-    `false frames: ${doorFalseFrameCount}`,
-    `sequenceTriggered: ${sequenceTriggered}`,
-    `sceneState: ${sceneState}`,
-    `activeTechnique: ${activeTechnique}`,
-    `phase: ${phase}`,
-    `segmentationReady: ${segmentationReady}`,
-    `door image loaded: ${doorImage.complete}`,
+    `puga signal: ${rawPugaSignalActive}`,
+    `puga hold progress: ${pugaSignalHoldProgress.toFixed(2)}`,
+    `puga false frames: ${pugaFalseFrameCount}`,
+    `puga stage: ${pugaStage}`,
+    `puga reason: ${pugaDebugReason}`,
   ];
 
   ctx.save();
