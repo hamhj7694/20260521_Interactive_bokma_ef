@@ -195,6 +195,7 @@ let rawPugaSignalActive = false;
 const PUGA_STAGE_NONE = 0;
 const PUGA_STAGE_HAND_FLAME = 1;
 const PUGA_STAGE_FIRE_PILLAR = 2;
+const PUGA_STAGE_CONTROL = 3;
 
 let pugaStage = PUGA_STAGE_NONE;
 
@@ -204,6 +205,32 @@ const PUGA_HAND_SEPARATE_DISTANCE_RATIO = 0.22;
 //푸가 디버그 변수
 let pugaDebugReason = '';
 
+// 푸가 불꽃/불기둥 연출 상태
+let pugaLastLeftCenter = null;
+let pugaLastRightCenter = null;
+let pugaLastHandsSeenAt = null;
+const PUGA_ORB_HOLD_DURATION = 1000; // 1단계 불꽃 구슬 유지 시간(ms)
+const PUGA_FIRE_ORB_RADIUS = 84; // 불꽃 구슬 기본 크기
+const PUGA_PILLAR_BASE_WIDTH = 90; // 불기둥 시작 두께
+const PUGA_PILLAR_MAX_WIDTH = 120; // 불기둥 최대 두께
+
+let pugaPillarProgress = 0;
+let pugaLockedPillarLength = null;
+
+// 3단계 불기둥 각도 통제
+let pugaControlledAngle = null;
+let pugaLastControlledAngle = null;
+
+const PUGA_CONTROL_FINGER_DISTANCE_RATIO = 0.16; //손가락이 불 기둥 근처에 있어야 하는 거리
+const PUGA_CONTROL_ANGLE_SMOOTHING = 0.18; // 낮을수록 부드럽게 회전
+
+const PUGA_HAND_LOST_GRACE_DURATION = 900; // 손 인식 끊겨도 유지되는 시간(ms)
+const PUGA_PILLAR_GROW_SPEED = 0.055; // 불기둥으로 변하는 속도
+const PUGA_MAX_PILLAR_LENGTH_RATIO = 0.7; // 푸가 불꽃 최대 길이(화면 가로 길이 대비)
+
+const PUGA_PILLAR_TIP_WIDTH_RATIO = 0.04; // 양끝 최소 두께. 낮을수록 뾰족함
+const PUGA_PILLAR_CENTER_BULGE = 1.0; // 중앙 두께. 높을수록 중앙이 두꺼움
+const PUGA_PILLAR_EDGE_WAVE = 8; // 불기둥 가장자리 흔들림
 
 // =====================================================
 // 9. Hand Landmark Settings
@@ -651,6 +678,15 @@ function resetEffect() {
   rawPugaSignalActive = false;
   pugaContext = PUGA_CONTEXT_NORMAL;
   pugaStage = PUGA_STAGE_NONE;
+  pugaDebugReason = '';
+
+  pugaLastLeftCenter = null;
+  pugaLastRightCenter = null;
+  pugaLastHandsSeenAt = null;
+  pugaPillarProgress = 0;
+  pugaLockedPillarLength = null;
+  pugaControlledAngle = null;
+  pugaLastControlledAngle = null;
 
   activeTechnique = TECHNIQUE_NONE;
   techniqueStartedAt = null;
@@ -752,39 +788,6 @@ function isPugaSignalGesture(leftHand, rightHand) {
     return false;
   }
 
-  const dx = Math.abs(leftCenter.x - rightCenter.x);
-  const dy = Math.abs(leftCenter.y - rightCenter.y);
-
-  const verticallyArranged = dy > dx * 0.45;
-
-  if (!verticallyArranged) {
-    pugaDebugReason = `not vertical dx:${Math.round(dx)} dy:${Math.round(dy)}`;
-    return false;
-  }
-
-  const leftFingerDirection = getFingerAimDirectionY(leftHand.points);
-  const rightFingerDirection = getFingerAimDirectionY(rightHand.points);
-
-  if (!leftFingerDirection || !rightFingerDirection) {
-    pugaDebugReason = `dir fail L:${leftFingerDirection} R:${rightFingerDirection}`;
-    return false;
-  }
-
-  const fingersFacingEachOther =
-    (
-      leftFingerDirection === 'DOWN' &&
-      rightFingerDirection === 'UP'
-    ) ||
-    (
-      leftFingerDirection === 'UP' &&
-      rightFingerDirection === 'DOWN'
-    );
-
-  if (!fingersFacingEachOther) {
-    pugaDebugReason = `not facing L:${leftFingerDirection} R:${rightFingerDirection}`;
-    return false;
-  }
-
   const leftSoftCurl = isPugaVerySoftCurledHand(leftHand.landmarks);
   const rightSoftCurl = isPugaVerySoftCurledHand(rightHand.landmarks);
 
@@ -795,6 +798,34 @@ function isPugaSignalGesture(leftHand, rightHand) {
 
   pugaDebugReason = 'ok';
   return true;
+}
+
+function getFingerDirectionFromPalm(points) {
+  if (!points || points.length < 21) return null;
+
+  const palmCenter = getPalmCenter(points);
+  if (!palmCenter) return null;
+
+  const tips = [
+    points[FINGER.index.tip],
+    points[FINGER.middle.tip],
+    points[FINGER.ring.tip],
+    points[FINGER.pinky.tip],
+  ].filter(Boolean);
+
+  if (tips.length < 4) return null;
+
+  const avgTipY =
+    tips.reduce((sum, point) => sum + point.y, 0) / tips.length;
+
+  const deltaY = avgTipY - palmCenter.y;
+
+  const threshold = 4;
+
+  if (deltaY > threshold) return 'DOWN';
+  if (deltaY < -threshold) return 'UP';
+
+  return null;
 }
 
 function getFingerAimDirectionY(points) {
@@ -863,7 +894,7 @@ function isFingerNotFullyStraight(landmarks, finger) {
 
   // 손가락이 완전히 쫙 펴져 있으면 tipToMcp가 pipToMcp보다 훨씬 김.
   // 살짝이라도 말리면 이 비율이 줄어듦.
-  return tipToMcp < pipToMcp * 1.9;
+  return tipToMcp < pipToMcp * 2.2;
 }
 
 function getLandmarkDistance(a, b) {
@@ -919,6 +950,53 @@ function getPalmCenter(points) {
       pinkyMcp.y
     ) / 5,
   };
+}
+
+function getPugaControlAngleFromLeftFingers(leftHand, pillarCenter) {
+  if (!leftHand || !leftHand.points || leftHand.points.length < 21) {
+    return null;
+  }
+
+  const indexTip = leftHand.points[FINGER.index.tip];
+  const middleTip = leftHand.points[FINGER.middle.tip];
+
+  if (!indexTip || !middleTip || !pillarCenter) return null;
+
+  const fingerCenter = {
+    x: (indexTip.x + middleTip.x) / 2,
+    y: (indexTip.y + middleTip.y) / 2,
+  };
+
+  const { width, height } = getStageSize();
+
+  const controlRadius =
+    Math.min(width, height) * PUGA_CONTROL_FINGER_DISTANCE_RATIO;
+
+  const distanceFromPillarCenter = Math.hypot(
+    fingerCenter.x - pillarCenter.x,
+    fingerCenter.y - pillarCenter.y,
+  );
+
+  // 검지/중지의 중앙이 불기둥 중심 근처에 들어와야 조종 시작
+  if (distanceFromPillarCenter > controlRadius) {
+    return null;
+  }
+
+  const dx = middleTip.x - indexTip.x;
+  const dy = middleTip.y - indexTip.y;
+
+  if (Math.hypot(dx, dy) < 8) return null;
+
+  return Math.atan2(dy, dx);
+}
+
+function lerpAngle(from, to, amount) {
+  const difference = Math.atan2(
+    Math.sin(to - from),
+    Math.cos(to - from),
+  );
+
+  return from + difference * amount;
 }
 
 function isFingerExtendedVertical(landmarks, finger) {
@@ -1242,6 +1320,14 @@ function startPugaSequence() {
   pugaSignalStartTime = null;
   pugaSignalHoldProgress = 0;
   pugaFalseFrameCount = 0;
+
+  pugaLastLeftCenter = null;
+  pugaLastRightCenter = null;
+  pugaLastHandsSeenAt = null;
+  pugaPillarProgress = 0;
+  pugaLockedPillarLength = null;
+  pugaControlledAngle = null;
+  pugaLastControlledAngle = null;
 }
 
 function drawPugaSequence() {
@@ -1251,36 +1337,142 @@ function drawPugaSequence() {
     drawCoverVideo();
   }
 
+  const now = performance.now();
+
   const leftHand = latestHands.find((hand) => hand.label === 'Left');
   const rightHand = latestHands.find((hand) => hand.label === 'Right');
 
-  const leftCenter = leftHand ? getPalmCenter(leftHand.points) : null;
-  const rightCenter = rightHand ? getPalmCenter(rightHand.points) : null;
+  const currentLeftCenter = leftHand ? getPalmCenter(leftHand.points) : null;
+  const currentRightCenter = rightHand ? getPalmCenter(rightHand.points) : null;
 
-  if (leftCenter) {
-    drawPugaHandFlame(leftCenter, 1);
+  const bothHandsVisible =
+    Boolean(currentLeftCenter) && Boolean(currentRightCenter);
+
+  if (bothHandsVisible) {
+    pugaLastLeftCenter = currentLeftCenter;
+    pugaLastRightCenter = currentRightCenter;
+    pugaLastHandsSeenAt = now;
   }
 
-  if (rightCenter) {
-    drawPugaHandFlame(rightCenter, 1);
-  }
+  const canUseLastHands =
+    pugaLastHandsSeenAt !== null &&
+    now - pugaLastHandsSeenAt < PUGA_HAND_LOST_GRACE_DURATION;
+
+  const leftCenter =
+    currentLeftCenter || (canUseLastHands ? pugaLastLeftCenter : null);
+
+  const rightCenter =
+    currentRightCenter || (canUseLastHands ? pugaLastRightCenter : null);
 
   if (leftCenter && rightCenter) {
-    const distance = Math.hypot(
+    const rawDistance = Math.hypot(
       leftCenter.x - rightCenter.x,
       leftCenter.y - rightCenter.y,
     );
 
     const { width, height } = getStageSize();
+
     const separateDistance =
       Math.min(width, height) * PUGA_HAND_SEPARATE_DISTANCE_RATIO;
 
-    if (distance > separateDistance) {
+    const maxPillarLength =
+      width * PUGA_MAX_PILLAR_LENGTH_RATIO;
+
+    const pugaElapsed =
+      techniqueStartedAt ? now - techniqueStartedAt : 0;
+
+    const orbHoldFinished =
+      pugaElapsed >= PUGA_ORB_HOLD_DURATION;
+
+    if (
+      orbHoldFinished &&
+      rawDistance > separateDistance
+    ) {
       pugaStage = PUGA_STAGE_FIRE_PILLAR;
     }
 
+    const midpoint = {
+      x: (leftCenter.x + rightCenter.x) / 2,
+      y: (leftCenter.y + rightCenter.y) / 2,
+    };
+
+    // 1단계: 양손 중앙에 원형 불꽃 구슬 유지
+    if (pugaStage < PUGA_STAGE_FIRE_PILLAR) {
+      pugaPillarProgress = 0;
+      pugaLockedPillarLength = null;
+      drawPugaFireOrb(midpoint, 1);
+    }
+
+    // 2단계: 구슬이 불기둥으로 서서히 변형
     if (pugaStage >= PUGA_STAGE_FIRE_PILLAR) {
-      drawPugaFirePillar(leftCenter, rightCenter);
+      pugaPillarProgress = Math.min(
+        pugaPillarProgress + PUGA_PILLAR_GROW_SPEED,
+        1,
+      );
+
+      const clampedDistance = Math.min(rawDistance, maxPillarLength);
+
+      // 3단계 발동 조건:
+      // 2단계 불기둥이 최대 길이에 도달하면 CONTROL 단계로 진입
+      if (
+        rawDistance >= maxPillarLength ||
+        pugaLockedPillarLength !== null
+      ) {
+        pugaLockedPillarLength = maxPillarLength;
+        pugaStage = PUGA_STAGE_CONTROL;
+      }
+
+      const pillarLength =
+        pugaLockedPillarLength !== null
+          ? pugaLockedPillarLength
+          : clampedDistance;
+
+      // 기본 각도는 양손 사이 방향
+      let pillarStart = leftCenter;
+      let pillarEnd = rightCenter;
+
+      // 3단계부터는 왼손 검지/중지 방향으로 불기둥 각도 조종
+      if (pugaStage >= PUGA_STAGE_CONTROL) {
+        const controlAngle = getPugaControlAngleFromLeftFingers(
+          leftHand,
+          midpoint,
+        );
+
+        if (controlAngle !== null) {
+          pugaControlledAngle = controlAngle;
+        }
+
+        if (pugaControlledAngle !== null) {
+          pugaLastControlledAngle =
+            pugaLastControlledAngle === null
+              ? pugaControlledAngle
+              : lerpAngle(
+                  pugaLastControlledAngle,
+                  pugaControlledAngle,
+                  PUGA_CONTROL_ANGLE_SMOOTHING,
+                );
+
+          const halfLength = pillarLength / 2;
+
+          pillarStart = {
+            x: midpoint.x - Math.cos(pugaLastControlledAngle) * halfLength,
+            y: midpoint.y - Math.sin(pugaLastControlledAngle) * halfLength,
+          };
+
+          pillarEnd = {
+            x: midpoint.x + Math.cos(pugaLastControlledAngle) * halfLength,
+            y: midpoint.y + Math.sin(pugaLastControlledAngle) * halfLength,
+          };
+        }
+      }
+
+      drawPugaFirePillarFromCenter(
+        midpoint,
+        pillarStart,
+        pillarEnd,
+        pillarLength,
+        pugaPillarProgress,
+      );
     }
   }
 
@@ -2520,6 +2712,80 @@ function drawHandLabel(points, label) {
 // -----------------------------------------------------
 // 18-2.  스쿠나 푸가
 // -----------------------------------------------------
+function drawPugaFireOrb(center, intensity = 1) {
+  const time = performance.now() * 0.001;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  const pulse =
+    1 +
+    Math.sin(time * 8) * 0.08 +
+    Math.sin(time * 15) * 0.04;
+
+  const baseRadius = PUGA_FIRE_ORB_RADIUS * pulse;
+
+  const coreGradient = ctx.createRadialGradient(
+    center.x,
+    center.y,
+    0,
+    center.x,
+    center.y,
+    baseRadius * 1.55,
+  );
+
+  coreGradient.addColorStop(0, `rgba(255, 245, 180, ${0.95 * intensity})`);
+  coreGradient.addColorStop(0.28, `rgba(255, 170, 40, ${0.82 * intensity})`);
+  coreGradient.addColorStop(0.58, `rgba(255, 55, 10, ${0.45 * intensity})`);
+  coreGradient.addColorStop(1, 'rgba(120, 0, 0, 0)');
+
+  ctx.fillStyle = coreGradient;
+  ctx.beginPath();
+  ctx.arc(center.x, center.y, baseRadius * 1.55, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 불꽃 입자
+  for (let i = 0; i < 18; i += 1) {
+    const seed = i * 1.37;
+    const angle = seed + time * (2.5 + i * 0.03);
+    const radius =
+      baseRadius * (0.45 + pseudoRandom(i * 8.71) * 1.1);
+
+    const x =
+      center.x +
+      Math.cos(angle) * radius;
+
+    const y =
+      center.y +
+      Math.sin(angle) * radius -
+      Math.abs(Math.sin(time * 3 + i)) * 8;
+
+    const size =
+      5 +
+      pseudoRandom(i * 13.11) * 11;
+
+    const particleGradient = ctx.createRadialGradient(
+      x,
+      y,
+      0,
+      x,
+      y,
+      size,
+    );
+
+    particleGradient.addColorStop(0, 'rgba(255, 245, 170, 0.9)');
+    particleGradient.addColorStop(0.35, 'rgba(255, 125, 20, 0.55)');
+    particleGradient.addColorStop(1, 'rgba(180, 0, 0, 0)');
+
+    ctx.fillStyle = particleGradient;
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
 function drawPugaHandFlame(center, intensity = 1) {
   const time = performance.now() * 0.001;
 
@@ -2654,6 +2920,215 @@ function drawPugaFirePillar(start, end) {
   ctx.stroke();
 
   ctx.restore();
+}
+
+function drawPugaFirePillarFromCenter(
+  center,
+  leftCenter,
+  rightCenter,
+  targetLength,
+  progress = 1,
+) {
+  const time = performance.now() * 0.001;
+
+  const dx = rightCenter.x - leftCenter.x;
+  const dy = rightCenter.y - leftCenter.y;
+
+  const rawDistance = Math.hypot(dx, dy);
+  if (rawDistance < 1) {
+    drawPugaFireOrb(center, 1);
+    return;
+  }
+
+  const angle = Math.atan2(dy, dx);
+
+  const t = easeOutCubic(Math.max(0, Math.min(1, progress)));
+
+  const orbRadius = PUGA_FIRE_ORB_RADIUS * 1.25;
+  const currentLength = lerp(orbRadius, targetLength, t);
+
+  const pillarWidth =
+    lerp(
+      PUGA_PILLAR_BASE_WIDTH,
+      Math.min(
+        PUGA_PILLAR_MAX_WIDTH,
+        Math.max(PUGA_PILLAR_BASE_WIDTH * 0.58, targetLength * 0.18),
+      ),
+      t,
+    );
+
+  ctx.save();
+
+  ctx.translate(center.x, center.y);
+  ctx.rotate(angle);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  const leftX = -currentLength / 2;
+  const rightX = currentLength / 2;
+  const length = Math.max(1, rightX - leftX);
+
+  // 바깥 불꽃 글로우
+  const glowGradient = ctx.createLinearGradient(
+    0,
+    -pillarWidth,
+    0,
+    pillarWidth,
+  );
+
+  glowGradient.addColorStop(0, 'rgba(120, 0, 0, 0)');
+  glowGradient.addColorStop(0.16, `rgba(255, 35, 0, ${0.34 + t * 0.18})`);
+  glowGradient.addColorStop(0.38, `rgba(255, 120, 20, ${0.5 + t * 0.22})`);
+  glowGradient.addColorStop(0.5, `rgba(255, 245, 150, ${0.68 + t * 0.22})`);
+  glowGradient.addColorStop(0.62, `rgba(255, 120, 20, ${0.5 + t * 0.22})`);
+  glowGradient.addColorStop(0.84, `rgba(190, 0, 0, ${0.28 + t * 0.16})`);
+  glowGradient.addColorStop(1, 'rgba(120, 0, 0, 0)');
+
+  ctx.fillStyle = glowGradient;
+  ctx.beginPath();
+
+  // 왼쪽 끝을 뾰족하게 시작
+  ctx.moveTo(leftX, 0);
+
+  // 위쪽 외곽선
+  for (let x = leftX; x <= rightX; x += 12) {
+    const ratio = (x - leftX) / length;
+
+    // 0 at ends, 1 at center
+    const centerBulge = Math.pow(Math.sin(ratio * Math.PI), 0.72);
+
+    const halfWidth =
+      pillarWidth *
+      (
+        PUGA_PILLAR_TIP_WIDTH_RATIO +
+        centerBulge * PUGA_PILLAR_CENTER_BULGE
+      ) *
+      t;
+
+    const wave =
+      (
+        Math.sin(x * 0.045 + time * 8.5) * PUGA_PILLAR_EDGE_WAVE +
+        Math.sin(x * 0.11 - time * 5.7) * PUGA_PILLAR_EDGE_WAVE * 0.45
+      ) *
+      centerBulge *
+      t;
+
+    ctx.lineTo(x, -halfWidth + wave);
+  }
+
+  // 오른쪽 끝을 뾰족하게 찍음
+  ctx.lineTo(rightX, 0);
+
+  // 아래쪽 외곽선
+  for (let x = rightX; x >= leftX; x -= 12) {
+    const ratio = (x - leftX) / length;
+
+    const centerBulge = Math.pow(Math.sin(ratio * Math.PI), 0.72);
+
+    const halfWidth =
+      pillarWidth *
+      (
+        PUGA_PILLAR_TIP_WIDTH_RATIO +
+        centerBulge * PUGA_PILLAR_CENTER_BULGE
+      ) *
+      t;
+
+    const wave =
+      (
+        Math.sin(x * 0.052 - time * 8) * PUGA_PILLAR_EDGE_WAVE +
+        Math.sin(x * 0.1 + time * 5.4) * PUGA_PILLAR_EDGE_WAVE * 0.45
+      ) *
+      centerBulge *
+      t;
+
+    ctx.lineTo(x, halfWidth + wave);
+  }
+
+  ctx.closePath();
+  ctx.fill();
+
+  // 중심 고열 코어도 끝으로 갈수록 얇아지는 형태로 그림
+  const coreGradient = ctx.createLinearGradient(
+    0,
+    -pillarWidth * 0.25,
+    0,
+    pillarWidth * 0.25,
+  );
+
+  coreGradient.addColorStop(0, 'rgba(255, 120, 20, 0)');
+  coreGradient.addColorStop(0.5, `rgba(255, 245, 180, ${0.72 + t * 0.22})`);
+  coreGradient.addColorStop(1, 'rgba(255, 120, 20, 0)');
+
+  ctx.fillStyle = coreGradient;
+  ctx.beginPath();
+
+  ctx.moveTo(leftX, 0);
+
+  for (let x = leftX; x <= rightX; x += 14) {
+    const ratio = (x - leftX) / length;
+    const centerBulge = Math.pow(Math.sin(ratio * Math.PI), 1.05);
+
+    const coreHalfWidth =
+      pillarWidth * 0.18 * centerBulge * t;
+
+    const wave =
+      Math.sin(x * 0.06 + time * 12) * 3.5 * centerBulge * t;
+
+    ctx.lineTo(x, -coreHalfWidth + wave);
+  }
+
+  ctx.lineTo(rightX, 0);
+
+  for (let x = rightX; x >= leftX; x -= 14) {
+    const ratio = (x - leftX) / length;
+    const centerBulge = Math.pow(Math.sin(ratio * Math.PI), 1.05);
+
+    const coreHalfWidth =
+      pillarWidth * 0.18 * centerBulge * t;
+
+    const wave =
+      Math.sin(x * 0.06 + time * 12) * 3.5 * centerBulge * t;
+
+    ctx.lineTo(x, coreHalfWidth + wave);
+  }
+
+  ctx.closePath();
+  ctx.fill();
+
+  // 양끝 불꽃 잔상은 너무 둥글면 뾰족함을 해치므로 약하게
+  drawLocalPugaEndFlare(leftX, 0, 0.55);
+  drawLocalPugaEndFlare(rightX, 0, 0.55);
+
+  ctx.restore();
+
+  // 중앙 구슬 잔광
+  drawPugaFireOrb(center, 0.28 * (1 - t) + 0.12);
+}
+
+function drawLocalPugaEndFlare(x, y, intensity = 1) {
+  const time = performance.now() * 0.001;
+
+  const radius =
+    26 +
+    Math.sin(time * 10 + x * 0.01) * 4;
+
+  const gradient = ctx.createRadialGradient(
+    x,
+    y,
+    0,
+    x,
+    y,
+    radius,
+  );
+
+  gradient.addColorStop(0, `rgba(255, 245, 170, ${0.85 * intensity})`);
+  gradient.addColorStop(0.38, `rgba(255, 120, 20, ${0.45 * intensity})`);
+  gradient.addColorStop(1, 'rgba(180, 0, 0, 0)');
+
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 // =====================================================
