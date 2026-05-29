@@ -195,7 +195,8 @@ let rawPugaSignalActive = false;
 const PUGA_STAGE_NONE = 0;
 const PUGA_STAGE_HAND_FLAME = 1;
 const PUGA_STAGE_FIRE_PILLAR = 2;
-const PUGA_STAGE_CONTROL = 3;
+const PUGA_STAGE_CONTROL_READY = 3;
+const PUGA_STAGE_CONTROL = 4;
 
 let pugaStage = PUGA_STAGE_NONE;
 
@@ -220,6 +221,17 @@ let pugaLockedPillarLength = null;
 // 3단계 불기둥 각도 통제
 let pugaControlledAngle = null;
 let pugaLastControlledAngle = null;
+
+let pugaLockedPillarCenter = null;
+let pugaLockedPillarAngle = null;
+
+let pugaControlBlendStartedAt = null;
+let pugaControlBlendProgress = 0;
+
+let pugaControlledCenter = null;
+let pugaLastControlledCenter = null;
+
+const PUGA_CONTROL_BLEND_DURATION = 700; // 권한이 넘어가는 시간(ms)
 
 const PUGA_CONTROL_FINGER_DISTANCE_RATIO = 0.16; //손가락이 불 기둥 근처에 있어야 하는 거리
 const PUGA_CONTROL_ANGLE_SMOOTHING = 0.18; // 낮을수록 부드럽게 회전
@@ -688,6 +700,15 @@ function resetEffect() {
   pugaControlledAngle = null;
   pugaLastControlledAngle = null;
 
+  pugaLockedPillarCenter = null;
+  pugaLockedPillarAngle = null;
+
+  pugaControlBlendStartedAt = null;
+  pugaControlBlendProgress = 0;
+
+  pugaControlledCenter = null;
+  pugaLastControlledCenter = null;
+
   activeTechnique = TECHNIQUE_NONE;
   techniqueStartedAt = null;
 }
@@ -990,6 +1011,46 @@ function getPugaControlAngleFromLeftFingers(leftHand, pillarCenter) {
   return Math.atan2(dy, dx);
 }
 
+function getPugaControlPoseFromLeftFingers(leftHand, pillarCenter) {
+  if (!leftHand || !leftHand.points || leftHand.points.length < 21) {
+    return null;
+  }
+
+  const indexTip = leftHand.points[FINGER.index.tip];
+  const middleTip = leftHand.points[FINGER.middle.tip];
+
+  if (!indexTip || !middleTip || !pillarCenter) return null;
+
+  const fingerCenter = {
+    x: (indexTip.x + middleTip.x) / 2,
+    y: (indexTip.y + middleTip.y) / 2,
+  };
+
+  const { width, height } = getStageSize();
+
+  const controlRadius =
+    Math.min(width, height) * PUGA_CONTROL_FINGER_DISTANCE_RATIO;
+
+  const distanceFromPillarCenter = Math.hypot(
+    fingerCenter.x - pillarCenter.x,
+    fingerCenter.y - pillarCenter.y,
+  );
+
+  if (distanceFromPillarCenter > controlRadius) {
+    return null;
+  }
+
+  const dx = middleTip.x - indexTip.x;
+  const dy = middleTip.y - indexTip.y;
+
+  if (Math.hypot(dx, dy) < 8) return null;
+
+  return {
+    center: fingerCenter,
+    angle: Math.atan2(dy, dx),
+  };
+}
+
 function lerpAngle(from, to, amount) {
   const difference = Math.atan2(
     Math.sin(to - from),
@@ -997,6 +1058,13 @@ function lerpAngle(from, to, amount) {
   );
 
   return from + difference * amount;
+}
+
+function lerpPoint(from, to, amount) {
+  return {
+    x: lerp(from.x, to.x, amount),
+    y: lerp(from.y, to.y, amount),
+  };
 }
 
 function isFingerExtendedVertical(landmarks, finger) {
@@ -1328,6 +1396,15 @@ function startPugaSequence() {
   pugaLockedPillarLength = null;
   pugaControlledAngle = null;
   pugaLastControlledAngle = null;
+
+  pugaLockedPillarCenter = null;
+  pugaLockedPillarAngle = null;
+
+  pugaControlBlendStartedAt = null;
+  pugaControlBlendProgress = 0;
+
+  pugaControlledCenter = null;
+  pugaLastControlledCenter = null;
 }
 
 function drawPugaSequence() {
@@ -1385,6 +1462,7 @@ function drawPugaSequence() {
       pugaElapsed >= PUGA_ORB_HOLD_DURATION;
 
     if (
+      pugaStage < PUGA_STAGE_FIRE_PILLAR &&
       orbHoldFinished &&
       rawDistance > separateDistance
     ) {
@@ -1414,12 +1492,34 @@ function drawPugaSequence() {
 
       // 3단계 발동 조건:
       // 2단계 불기둥이 최대 길이에 도달하면 CONTROL 단계로 진입
-      if (
-        rawDistance >= maxPillarLength ||
-        pugaLockedPillarLength !== null
-      ) {
+
+      // 2.5단계 발동 조건:
+      // 불기둥이 최대 길이에 도달하면 길이/중심/각도 고정
+      const reachedMaxPillarLength =
+        rawDistance >= maxPillarLength * 0.98 ||
+        clampedDistance >= maxPillarLength * 0.98 ||
+        pugaLockedPillarLength !== null;
+
+      if (reachedMaxPillarLength) {
         pugaLockedPillarLength = maxPillarLength;
-        pugaStage = PUGA_STAGE_CONTROL;
+
+        if (pugaStage < PUGA_STAGE_CONTROL_READY) {
+          pugaStage = PUGA_STAGE_CONTROL_READY;
+
+          pugaLockedPillarCenter = { ...midpoint };
+          pugaLockedPillarAngle = Math.atan2(
+            rightCenter.y - leftCenter.y,
+            rightCenter.x - leftCenter.x,
+          );
+
+          pugaControlBlendStartedAt = null;
+          pugaControlBlendProgress = 0;
+
+          pugaControlledCenter = null;
+          pugaLastControlledCenter = null;
+          pugaControlledAngle = null;
+          pugaLastControlledAngle = null;
+        }
       }
 
       const pillarLength =
@@ -1427,19 +1527,93 @@ function drawPugaSequence() {
           ? pugaLockedPillarLength
           : clampedDistance;
 
-      // 기본 각도는 양손 사이 방향
-      let pillarStart = leftCenter;
-      let pillarEnd = rightCenter;
+      // 기본값: 2단계에서는 양손 기준
+      let renderCenter = midpoint;
+      let renderAngle = Math.atan2(
+        rightCenter.y - leftCenter.y,
+        rightCenter.x - leftCenter.x,
+      );
 
-      // 3단계부터는 왼손 검지/중지 방향으로 불기둥 각도 조종
-      if (pugaStage >= PUGA_STAGE_CONTROL) {
-        const controlAngle = getPugaControlAngleFromLeftFingers(
+      // 2.5단계부터는 일단 고정된 중심/각도 사용
+      if (pugaStage === PUGA_STAGE_CONTROL_READY) {
+        renderCenter = pugaLockedPillarCenter || midpoint;
+        renderAngle = pugaLockedPillarAngle ?? renderAngle;
+      }
+
+      // 2.5단계:
+      // 왼손 검지/중지가 고정된 불기둥 중앙 근처에 들어오면
+      // 그때부터 권한을 천천히 넘김
+      if (pugaStage >= PUGA_STAGE_CONTROL_READY) {
+        const controlPose = getPugaControlPoseFromLeftFingers(
           leftHand,
-          midpoint,
+          pugaLockedPillarCenter || midpoint,
         );
 
-        if (controlAngle !== null) {
-          pugaControlledAngle = controlAngle;
+        if (controlPose) {
+          pugaControlledCenter = controlPose.center;
+          pugaControlledAngle = controlPose.angle;
+
+          if (pugaControlBlendStartedAt === null) {
+            pugaControlBlendStartedAt = now;
+          }
+
+          const blendElapsed =
+            now - pugaControlBlendStartedAt;
+
+          pugaControlBlendProgress = Math.min(
+            blendElapsed / PUGA_CONTROL_BLEND_DURATION,
+            1,
+          );
+
+          const blendT = easeInOutCubic(pugaControlBlendProgress);
+
+          // 시작값은 2.5단계에서 고정된 불기둥 중심/각도
+          const startCenter = pugaLockedPillarCenter || midpoint;
+          const startAngle = pugaLockedPillarAngle ?? renderAngle;
+
+          // 목표값은 왼손 검지/중지 선의 중심/각도
+          renderCenter = lerpPoint(
+            startCenter,
+            pugaControlledCenter,
+            blendT,
+          );
+
+          renderAngle = lerpAngle(
+            startAngle,
+            pugaControlledAngle,
+            blendT,
+          );
+
+          if (pugaControlBlendProgress >= 1) {
+            pugaStage = PUGA_STAGE_CONTROL;
+          }
+        }
+      }
+
+      // 3단계:
+      // 권한이 완전히 넘어간 후에는 왼손 검지/중지를 계속 따라감
+      if (pugaStage >= PUGA_STAGE_CONTROL) {
+        const controlPose = getPugaControlPoseFromLeftFingers(
+          leftHand,
+          pugaLastControlledCenter || pugaLockedPillarCenter || midpoint,
+        );
+
+        if (controlPose) {
+          pugaControlledCenter = controlPose.center;
+          pugaControlledAngle = controlPose.angle;
+        }
+
+        if (pugaControlledCenter) {
+          pugaLastControlledCenter =
+            pugaLastControlledCenter === null
+              ? pugaControlledCenter
+              : lerpPoint(
+                  pugaLastControlledCenter,
+                  pugaControlledCenter,
+                  PUGA_CONTROL_ANGLE_SMOOTHING,
+                );
+
+          renderCenter = pugaLastControlledCenter;
         }
 
         if (pugaControlledAngle !== null) {
@@ -1452,22 +1626,24 @@ function drawPugaSequence() {
                   PUGA_CONTROL_ANGLE_SMOOTHING,
                 );
 
-          const halfLength = pillarLength / 2;
-
-          pillarStart = {
-            x: midpoint.x - Math.cos(pugaLastControlledAngle) * halfLength,
-            y: midpoint.y - Math.sin(pugaLastControlledAngle) * halfLength,
-          };
-
-          pillarEnd = {
-            x: midpoint.x + Math.cos(pugaLastControlledAngle) * halfLength,
-            y: midpoint.y + Math.sin(pugaLastControlledAngle) * halfLength,
-          };
+          renderAngle = pugaLastControlledAngle;
         }
       }
 
+      const halfLength = pillarLength / 2;
+
+      const pillarStart = {
+        x: renderCenter.x - Math.cos(renderAngle) * halfLength,
+        y: renderCenter.y - Math.sin(renderAngle) * halfLength,
+      };
+
+      const pillarEnd = {
+        x: renderCenter.x + Math.cos(renderAngle) * halfLength,
+        y: renderCenter.y + Math.sin(renderAngle) * halfLength,
+      };
+
       drawPugaFirePillarFromCenter(
-        midpoint,
+        renderCenter,
         pillarStart,
         pillarEnd,
         pillarLength,
