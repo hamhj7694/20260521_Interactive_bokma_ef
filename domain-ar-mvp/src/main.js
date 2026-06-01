@@ -12,7 +12,7 @@ const ctx = canvas.getContext('2d');
 // 2. Global Settings
 // =====================================================
 
-const DEBUG = false;
+const DEBUG = true;
 const MIRROR_VIEW = true;
 
 // =====================================================
@@ -41,8 +41,9 @@ const SLASH_DRAW_DURATION = 650; // 절단선이 빠르게 그어지는 시간
 const SLASH_HOLD_DURATION = 300; // 균열선 유지 시간
 const SLICE_SPLIT_DURATION = 850; // 균열선을 기준으로 화면 조각들이 벌어지는 시간
 
+// 조각 테두리부터 주술 영역이 타들어가고, 아래에서 일반 캠이 드러남
 const SLICED_MAGIC_HOLD_DURATION = 1000; // 조각난 주술 영역 유지 시간
-const MAGIC_DISSOLVE_DURATION = 5200; // 주술 영역이 테두리부터 가루처럼 사라지는 시간
+const MAGIC_DISSOLVE_DURATION = 2800; // 주술 영역이 타들어가며 사라지는 시간
 
 // =====================================================
 // 5. Door / Person Scene Settings
@@ -75,6 +76,10 @@ const PERSON_FINAL_PIVOT_Y = 0.75;
 // 전경 붉은 물 최종 진하기
 const FRONT_WATER_FINAL_ALPHA = 1;
 
+// 전경 붉은 물 세로 위치
+// 0.8 = 화면 아래쪽, 숫자가 작을수록 위로 올라감
+const FRONT_WATER_Y_RATIO = 0.8;
+
 // 전경 붉은 물 높이
 const FRONT_WATER_HEIGHT_RATIO = 0.16;
 
@@ -91,7 +96,9 @@ const FRONT_WATER_DOOR_RELATIVE_Y = 1;
 // 6. Scene State
 // =====================================================
 
+// 6-1. 복마어주자 전용 변수
 // 절단선 연출 설정
+const SLASH_LINE_WIDTH = 2.2;
 const SLASH_DELAY_STEP = 0.055;
 
 const STATE_NORMAL = 'NORMAL';
@@ -126,9 +133,12 @@ let slicePiecesGenerated = false;
 const realityCanvas = document.createElement('canvas');
 const realityCtx = realityCanvas.getContext('2d');
 
-// 테두리 가루화 마스크용 임시 캔버스
-const dissolveCanvas = document.createElement('canvas');
-const dissolveCtx = dissolveCanvas.getContext('2d');
+//-----------------------------------------------------
+// 6-2. 푸가 전용 변수
+const PUGA_CONTEXT_NORMAL = 'NORMAL';
+const PUGA_CONTEXT_SLICED = 'SLICED';
+
+let pugaContext = PUGA_CONTEXT_NORMAL;
 
 // =====================================================
 // 7. MediaPipe / Segmentation State
@@ -170,6 +180,87 @@ const ONE_HAND_HOLD_DURATION = 3000;
 const BOKMA_BORDER_HOLD_AFTER_START_DURATION = 1000;
 const BOKMA_BORDER_FADE_DURATION = 500;
 
+//------------------------------------------------------
+// 푸가 신호 유지 판정
+const PUGA_SIGNAL_HOLD_DURATION = 2000;
+const PUGA_OFF_FRAME_THRESHOLD = 10;
+
+let pugaSignalStartTime = null;
+let pugaSignalHoldProgress = 0;
+let pugaFalseFrameCount = 0;
+let rawPugaSignalActive = false;
+
+//-----------------------------------------------------
+// 푸가 단계 변수 추가
+const PUGA_STAGE_NONE = 0;
+const PUGA_STAGE_HAND_FLAME = 1;
+const PUGA_STAGE_FIRE_PILLAR = 2;
+const PUGA_STAGE_CONTROL_READY = 3;
+const PUGA_STAGE_CONTROL = 4;
+
+let pugaStage = PUGA_STAGE_NONE;
+
+// const PUGA_HAND_TOUCH_DISTANCE_RATIO = 0.26; //푸가 1단계에 사용 안함
+const PUGA_HAND_SEPARATE_DISTANCE_RATIO = 0.22;
+
+//푸가 디버그 변수
+let pugaDebugReason = '';
+
+// 푸가 불꽃/불기둥 연출 상태
+let pugaLastLeftCenter = null;
+let pugaLastRightCenter = null;
+let pugaLastHandsSeenAt = null;
+const PUGA_ORB_HOLD_DURATION = 1000; // 1단계 불꽃 구슬 유지 시간(ms)
+const PUGA_FIRE_ORB_RADIUS = 84; // 불꽃 구슬 기본 크기
+const PUGA_PILLAR_BASE_WIDTH = 90; // 불기둥 시작 두께
+const PUGA_PILLAR_MAX_WIDTH = 120; // 불기둥 최대 두께
+
+let pugaPillarProgress = 0;
+let pugaLockedPillarLength = null;
+
+// 3단계 불기둥 각도 통제
+let pugaControlledAngle = null;
+let pugaLastControlledAngle = null;
+
+let pugaLockedPillarCenter = null;
+let pugaLockedPillarAngle = null;
+
+let pugaControlBlendStartedAt = null;
+let pugaControlBlendProgress = 0;
+
+let pugaControlledCenter = null;
+let pugaLastControlledCenter = null;
+
+let pugaControlPoseLastSeenAt = null;
+let pugaControlPoseLost = false;
+
+const PUGA_CONTROL_POSE_MAX_LOST_DURATION = 1200; // 손가락 인식 끊김 허용 시간
+const PUGA_CONTROL_MAX_ANGLE_JUMP = Math.PI * 0.55; // 약 99도 이상 튀면 무시
+
+// 3단계 이후: leftHand 랜드마크 크기로 불기둥 두께 제어
+let pugaControlHandBaseTrackerSize = null;
+let pugaDynamicPillarWidth = null;
+let pugaDynamicPillarScale = 1;
+
+const PUGA_PILLAR_DYNAMIC_WIDTH_SMOOTHING = 0.18;
+
+// 통제권 획득 이후 손 크기에 따른 불기둥 크기 배율
+const PUGA_PILLAR_MIN_SCALE = 0.1; // 최소 50%
+const PUGA_PILLAR_MAX_SCALE = 50.0; // 최대 5000%
+
+const PUGA_CONTROL_BLEND_DURATION = 700; // 권한이 넘어가는 시간(ms)
+
+const PUGA_CONTROL_FINGER_DISTANCE_RATIO = 0.16; //손가락이 불 기둥 근처에 있어야 하는 거리
+const PUGA_CONTROL_ANGLE_SMOOTHING = 0.18; // 낮을수록 부드럽게 회전
+
+const PUGA_HAND_LOST_GRACE_DURATION = 900; // 손 인식 끊겨도 유지되는 시간(ms)
+const PUGA_PILLAR_GROW_SPEED = 0.055; // 불기둥으로 변하는 속도
+const PUGA_MAX_PILLAR_LENGTH_RATIO = 0.7; // 푸가 불꽃 최대 길이(화면 가로 길이 대비)
+
+const PUGA_PILLAR_TIP_WIDTH_RATIO = 0.04; // 양끝 최소 두께. 낮을수록 뾰족함
+const PUGA_PILLAR_CENTER_BULGE = 1.0; // 중앙 두께. 높을수록 중앙이 두꺼움
+const PUGA_PILLAR_EDGE_WAVE = 8; // 불기둥 가장자리 흔들림
+
 // =====================================================
 // 9. Hand Landmark Settings
 // =====================================================
@@ -184,6 +275,11 @@ const HAND_CONNECTIONS = [
 ];
 
 const FINGER = {
+  thumb: {
+    tip: 4,
+    ip: 3,
+    mcp: 2,
+  },
   index: {
     tip: 8,
     pip: 6,
@@ -331,6 +427,7 @@ function renderLoop() {
     drawPugaSequence();
   } else if (sceneState === STATE_FINAL) {
     drawSlicedRealityScene();
+    drawHands();
   }
 
   drawDebugPanel();
@@ -531,7 +628,10 @@ function makePersonLayer(results) {
 // =====================================================
 
 function evaluateGesture() {
-  if (sceneState !== STATE_NORMAL) return;
+  if (
+    sceneState !== STATE_NORMAL &&
+    sceneState !== STATE_FINAL
+  ) return;
 
   isLeftGestureActive = false;
   isRightGestureActive = false;
@@ -555,6 +655,30 @@ function evaluateGesture() {
 
   rawDoorGestureActive = oneHandGestureActive;
 
+  const pugaSignalActive =
+    isPugaSignalGesture(leftHand, rightHand);
+
+  rawPugaSignalActive = pugaSignalActive;
+
+  // FINAL, 즉 토막난 캠 상태에서는 푸가만 허용
+  if (sceneState === STATE_FINAL) {
+    updatePugaSignalHoldState(pugaSignalActive);
+    return;
+  }
+
+  // NORMAL 상태에서는 푸가 신호를 우선 판정
+  if (pugaSignalActive) {
+    updatePugaSignalHoldState(true);
+
+    // 푸가 신호가 잡히는 동안 복마 게이지는 초기화
+    oneHandGestureStartTime = null;
+    oneHandGestureHoldProgress = 0;
+    doorFalseFrameCount = 0;
+
+    return;
+  }
+
+  updatePugaSignalHoldState(false);
   updateOneHandHoldState(oneHandGestureActive);
 }
 
@@ -575,6 +699,39 @@ function resetEffect() {
   oneHandGestureStartTime = null;
   oneHandGestureHoldProgress = 0;
   doorFalseFrameCount = 0;
+
+  // 푸가 신호 초기화
+  pugaSignalStartTime = null;
+  pugaSignalHoldProgress = 0;
+  pugaFalseFrameCount = 0;
+  rawPugaSignalActive = false;
+  pugaContext = PUGA_CONTEXT_NORMAL;
+  pugaStage = PUGA_STAGE_NONE;
+  pugaDebugReason = '';
+
+  pugaLastLeftCenter = null;
+  pugaLastRightCenter = null;
+  pugaLastHandsSeenAt = null;
+  pugaPillarProgress = 0;
+  pugaLockedPillarLength = null;
+  pugaControlledAngle = null;
+  pugaLastControlledAngle = null;
+
+  pugaLockedPillarCenter = null;
+  pugaLockedPillarAngle = null;
+
+  pugaControlBlendStartedAt = null;
+  pugaControlBlendProgress = 0;
+
+  pugaControlledCenter = null;
+  pugaLastControlledCenter = null;
+
+  pugaControlPoseLastSeenAt = null;
+  pugaControlPoseLost = false;
+
+  pugaControlHandBaseTrackerSize = null;
+  pugaDynamicPillarWidth = null;
+  pugaDynamicPillarScale = 1;
 
   activeTechnique = TECHNIQUE_NONE;
   techniqueStartedAt = null;
@@ -612,6 +769,38 @@ function updateOneHandHoldState(oneHandGestureActive) {
   }
 }
 
+function updatePugaSignalHoldState(pugaSignalActive) {
+  const now = performance.now();
+
+  if (pugaSignalActive) {
+    pugaFalseFrameCount = 0;
+
+    if (pugaSignalStartTime === null) {
+      pugaSignalStartTime = now;
+    }
+
+    const elapsed = now - pugaSignalStartTime;
+
+    pugaSignalHoldProgress = Math.min(
+      elapsed / PUGA_SIGNAL_HOLD_DURATION,
+      1,
+    );
+
+    if (elapsed >= PUGA_SIGNAL_HOLD_DURATION) {
+      startPugaSequence();
+    }
+
+    return;
+  }
+
+  pugaFalseFrameCount += 1;
+
+  if (pugaFalseFrameCount >= PUGA_OFF_FRAME_THRESHOLD) {
+    pugaSignalStartTime = null;
+    pugaSignalHoldProgress = 0;
+  }
+}
+
 function isDoorGesture(landmarks) {
   if (!landmarks || landmarks.length < 21) return false;
 
@@ -626,6 +815,380 @@ function isDoorGesture(landmarks) {
     ringFolded &&
     pinkyFolded
   );
+}
+
+function isPugaSignalGesture(leftHand, rightHand) {
+  pugaDebugReason = '';
+
+  if (!leftHand || !rightHand) {
+    pugaDebugReason = 'need two hands';
+    return false;
+  }
+
+  const leftCenter = getPalmCenter(leftHand.points);
+  const rightCenter = getPalmCenter(rightHand.points);
+
+  if (!leftCenter || !rightCenter) {
+    pugaDebugReason = 'no palm center';
+    return false;
+  }
+
+  const leftSoftCurl = isPugaVerySoftCurledHand(leftHand.landmarks);
+  const rightSoftCurl = isPugaVerySoftCurledHand(rightHand.landmarks);
+
+  if (!leftSoftCurl || !rightSoftCurl) {
+    pugaDebugReason = `curl fail L:${leftSoftCurl} R:${rightSoftCurl}`;
+    return false;
+  }
+
+  pugaDebugReason = 'ok';
+  return true;
+}
+
+function getFingerDirectionFromPalm(points) {
+  if (!points || points.length < 21) return null;
+
+  const palmCenter = getPalmCenter(points);
+  if (!palmCenter) return null;
+
+  const tips = [
+    points[FINGER.index.tip],
+    points[FINGER.middle.tip],
+    points[FINGER.ring.tip],
+    points[FINGER.pinky.tip],
+  ].filter(Boolean);
+
+  if (tips.length < 4) return null;
+
+  const avgTipY =
+    tips.reduce((sum, point) => sum + point.y, 0) / tips.length;
+
+  const deltaY = avgTipY - palmCenter.y;
+
+  const threshold = 4;
+
+  if (deltaY > threshold) return 'DOWN';
+  if (deltaY < -threshold) return 'UP';
+
+  return null;
+}
+
+function getFingerAimDirectionY(points) {
+  if (!points || points.length < 21) return null;
+
+  const tips = [
+    points[FINGER.index.tip],
+    points[FINGER.middle.tip],
+    points[FINGER.ring.tip],
+    points[FINGER.pinky.tip],
+  ].filter(Boolean);
+
+  const mcps = [
+    points[FINGER.index.mcp],
+    points[FINGER.middle.mcp],
+    points[FINGER.ring.mcp],
+    points[FINGER.pinky.mcp],
+  ].filter(Boolean);
+
+  if (tips.length < 4 || mcps.length < 4) return null;
+
+  const avgTipY =
+    tips.reduce((sum, point) => sum + point.y, 0) / tips.length;
+
+  const avgMcpY =
+    mcps.reduce((sum, point) => sum + point.y, 0) / mcps.length;
+
+  const deltaY = avgTipY - avgMcpY;
+
+  // 화면 좌표계: y가 커질수록 아래
+  // 기존 palmCenter 기준보다 훨씬 안정적.
+  const threshold = 10;
+
+  if (deltaY > threshold) return 'DOWN';
+  if (deltaY < -threshold) return 'UP';
+
+  return null;
+}
+
+function isPugaVerySoftCurledHand(landmarks) {
+  if (!landmarks || landmarks.length < 21) return false;
+
+  const softCurledCount = [
+    FINGER.index,
+    FINGER.middle,
+    FINGER.ring,
+    FINGER.pinky,
+  ].filter((finger) => {
+    return isFingerNotFullyStraight(landmarks, finger);
+  }).length;
+
+  // 테스트 1차: 1개만 살짝 말려도 인정
+  // 인식이 너무 쉬우면 2로 올리면 됨.
+  return softCurledCount >= 1;
+}
+
+function isFingerNotFullyStraight(landmarks, finger) {
+  const tip = landmarks[finger.tip];
+  const pip = landmarks[finger.pip];
+  const mcp = landmarks[finger.mcp];
+
+  if (!tip || !pip || !mcp) return false;
+
+  const tipToMcp = getLandmarkDistance(tip, mcp);
+  const pipToMcp = getLandmarkDistance(pip, mcp);
+
+  // 손가락이 완전히 쫙 펴져 있으면 tipToMcp가 pipToMcp보다 훨씬 김.
+  // 살짝이라도 말리면 이 비율이 줄어듦.
+  return tipToMcp < pipToMcp * 2.2;
+}
+
+function getLandmarkDistance(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = (a.z || 0) - (b.z || 0);
+
+  return Math.hypot(dx, dy, dz);
+}
+
+function isOpenHandGesture(landmarks) {
+  if (!landmarks || landmarks.length < 21) return false;
+
+  const indexExtended = isFingerExtendedVertical(landmarks, FINGER.index);
+  const middleExtended = isFingerExtendedVertical(landmarks, FINGER.middle);
+  const ringExtended = isFingerExtendedVertical(landmarks, FINGER.ring);
+  const pinkyExtended = isFingerExtendedVertical(landmarks, FINGER.pinky);
+
+  return (
+    indexExtended &&
+    middleExtended &&
+    ringExtended &&
+    pinkyExtended
+  );
+}
+
+function getPalmCenter(points) {
+  if (!points || points.length < 21) return null;
+
+  const wrist = points[0];
+  const indexMcp = points[5];
+  const middleMcp = points[9];
+  const ringMcp = points[13];
+  const pinkyMcp = points[17];
+
+  if (!wrist || !indexMcp || !middleMcp || !ringMcp || !pinkyMcp) {
+    return null;
+  }
+
+  return {
+    x: (
+      wrist.x +
+      indexMcp.x +
+      middleMcp.x +
+      ringMcp.x +
+      pinkyMcp.x
+    ) / 5,
+    y: (
+      wrist.y +
+      indexMcp.y +
+      middleMcp.y +
+      ringMcp.y +
+      pinkyMcp.y
+    ) / 5,
+  };
+}
+
+function getPugaControlAngleFromLeftFingers(leftHand, pillarCenter) {
+  if (!leftHand || !leftHand.points || leftHand.points.length < 21) {
+    return null;
+  }
+
+  const indexTip = leftHand.points[FINGER.index.tip];
+  const middleTip = leftHand.points[FINGER.middle.tip];
+
+  if (!indexTip || !middleTip || !pillarCenter) return null;
+
+  const fingerCenter = {
+    x: (indexTip.x + middleTip.x) / 2,
+    y: (indexTip.y + middleTip.y) / 2,
+  };
+
+  const { width, height } = getStageSize();
+
+  const controlRadius =
+    Math.min(width, height) * PUGA_CONTROL_FINGER_DISTANCE_RATIO;
+
+  const distanceFromPillarCenter = Math.hypot(
+    fingerCenter.x - pillarCenter.x,
+    fingerCenter.y - pillarCenter.y,
+  );
+
+  // 검지/중지의 중앙이 불기둥 중심 근처에 들어와야 조종 시작
+  if (distanceFromPillarCenter > controlRadius) {
+    return null;
+  }
+
+  const dx = middleTip.x - indexTip.x;
+  const dy = middleTip.y - indexTip.y;
+
+  if (Math.hypot(dx, dy) < 8) return null;
+
+  return Math.atan2(dy, dx);
+}
+
+function getPugaControlPoseFromLeftFingers(leftHand, pillarCenter) {
+  if (!leftHand || !leftHand.points) {
+    return null;
+  }
+
+  const indexTip = leftHand.points[FINGER.index.tip];
+  const middleTip = leftHand.points[FINGER.middle.tip];
+
+  if (!indexTip || !middleTip || !pillarCenter) return null;
+
+  const fingerCenter = {
+    x: (indexTip.x + middleTip.x) / 2,
+    y: (indexTip.y + middleTip.y) / 2,
+  };
+
+  const { width, height } = getStageSize();
+
+  const controlRadius =
+    Math.min(width, height) * PUGA_CONTROL_FINGER_DISTANCE_RATIO;
+
+  const distanceFromPillarCenter = Math.hypot(
+    fingerCenter.x - pillarCenter.x,
+    fingerCenter.y - pillarCenter.y,
+  );
+
+  if (distanceFromPillarCenter > controlRadius) {
+    return null;
+  }
+
+  const dx = middleTip.x - indexTip.x;
+  const dy = middleTip.y - indexTip.y;
+
+  if (Math.hypot(dx, dy) < 8) return null;
+
+  return {
+    center: fingerCenter,
+    angle: Math.atan2(dy, dx),
+  };
+}
+
+function getHandTrackerSize(hand) {
+  if (!hand || !hand.points || hand.points.length < 21) {
+    return null;
+  }
+
+  const xs = hand.points.map((point) => point.x);
+  const ys = hand.points.map((point) => point.y);
+
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+
+  const boxWidth = maxX - minX;
+  const boxHeight = maxY - minY;
+
+  const trackerSize = Math.hypot(boxWidth, boxHeight);
+
+  if (!Number.isFinite(trackerSize) || trackerSize < 1) {
+    return null;
+  }
+
+  return trackerSize;
+}
+
+function getPugaDynamicPillarWidth(controlHand, baseWidth) {
+  const currentTrackerSize = getHandTrackerSize(controlHand);
+
+  // leftHand 인식이 잠깐 끊기면 마지막 불기둥 두께 유지
+  if (currentTrackerSize === null) {
+    return pugaDynamicPillarWidth ?? baseWidth;
+  }
+
+  // 통제권이 넘어간 뒤 처음 잡힌 leftHand 크기를 기준 크기로 저장
+  if (pugaControlHandBaseTrackerSize === null) {
+    pugaControlHandBaseTrackerSize = currentTrackerSize;
+  }
+
+  const rawScale =
+    currentTrackerSize / pugaControlHandBaseTrackerSize;
+
+  // 기준 크기 대비 50% ~ 200% 사이로 제한
+  const clampedScale = clamp(
+    rawScale,
+    PUGA_PILLAR_MIN_SCALE,
+    PUGA_PILLAR_MAX_SCALE,
+  );
+
+  pugaDynamicPillarScale = clampedScale;
+
+  const targetWidth =
+    baseWidth * clampedScale;
+
+  pugaDynamicPillarWidth =
+    pugaDynamicPillarWidth === null
+      ? targetWidth
+      : lerp(
+          pugaDynamicPillarWidth,
+          targetWidth,
+          PUGA_PILLAR_DYNAMIC_WIDTH_SMOOTHING,
+        );
+
+  return pugaDynamicPillarWidth;
+}
+
+function getPugaControlPoseFromLeftFingersFree(leftHand) {
+  if (!leftHand || !leftHand.points) {
+    return null;
+  }
+
+  const indexTip = leftHand.points[FINGER.index.tip];
+  const middleTip = leftHand.points[FINGER.middle.tip];
+
+  if (!indexTip || !middleTip) return null;
+
+  const fingerCenter = {
+    x: (indexTip.x + middleTip.x) / 2,
+    y: (indexTip.y + middleTip.y) / 2,
+  };
+
+  const dx = middleTip.x - indexTip.x;
+  const dy = middleTip.y - indexTip.y;
+
+  if (Math.hypot(dx, dy) < 8) return null;
+
+  return {
+    center: fingerCenter,
+    angle: Math.atan2(dy, dx),
+  };
+}
+
+function lerpAngle(from, to, amount) {
+  const difference = Math.atan2(
+    Math.sin(to - from),
+    Math.cos(to - from),
+  );
+
+  return from + difference * amount;
+}
+
+function getAngleDifference(from, to) {
+  return Math.abs(
+    Math.atan2(
+      Math.sin(to - from),
+      Math.cos(to - from),
+    ),
+  );
+}
+
+function lerpPoint(from, to, amount) {
+  return {
+    x: lerp(from.x, to.x, amount),
+    y: lerp(from.y, to.y, amount),
+  };
 }
 
 function isFingerExtendedVertical(landmarks, finger) {
@@ -692,6 +1255,8 @@ function drawBokmaSequence() {
 
   if (phase === 'FINAL') {
     sceneState = STATE_FINAL;
+    activeTechnique = TECHNIQUE_NONE;
+    techniqueStartedAt = null;
   }
 
   // 0.0~1.2초: 기존 캠 화면 위에 붉은 안개가 서서히 덮이게 처리
@@ -923,8 +1488,365 @@ function getBokmaPhase(elapsed) {
 // -----------------------------------------------------
 // 17-2. 스쿠나 푸가 
 // -----------------------------------------------------
-function startPugaSequence() {}
-function drawPugaSequence() {}
+function startPugaSequence() {
+  if (activeTechnique !== TECHNIQUE_NONE) return;
+
+  pugaContext =
+    sceneState === STATE_FINAL
+      ? PUGA_CONTEXT_SLICED
+      : PUGA_CONTEXT_NORMAL;
+
+  sceneState = STATE_PUGA;
+  activeTechnique = TECHNIQUE_PUGA;
+
+  sequenceStartedAt = performance.now();
+  techniqueStartedAt = performance.now();
+
+  pugaStage = PUGA_STAGE_HAND_FLAME;
+
+  // 푸가 진입 순간 복마 게이지 초기화
+  oneHandGestureStartTime = null;
+  oneHandGestureHoldProgress = 0;
+  doorFalseFrameCount = 0;
+
+  pugaSignalStartTime = null;
+  pugaSignalHoldProgress = 0;
+  pugaFalseFrameCount = 0;
+
+  pugaLastLeftCenter = null;
+  pugaLastRightCenter = null;
+  pugaLastHandsSeenAt = null;
+  pugaPillarProgress = 0;
+  pugaLockedPillarLength = null;
+  pugaControlledAngle = null;
+  pugaLastControlledAngle = null;
+
+  pugaLockedPillarCenter = null;
+  pugaLockedPillarAngle = null;
+
+  pugaControlBlendStartedAt = null;
+  pugaControlBlendProgress = 0;
+
+  pugaControlledCenter = null;
+  pugaLastControlledCenter = null;
+
+  pugaControlHandBaseTrackerSize = null;
+  pugaDynamicPillarWidth = null;
+}
+
+function drawPugaSequence() {
+  if (pugaContext === PUGA_CONTEXT_SLICED) {
+    drawSlicedRealityScene();
+  } else {
+    drawCoverVideo();
+  }
+
+  const now = performance.now();
+
+  const leftHand = latestHands.find((hand) => hand.label === 'Left');
+  const rightHand = latestHands.find((hand) => hand.label === 'Right');
+
+  const currentLeftCenter = leftHand ? getPalmCenter(leftHand.points) : null;
+  const currentRightCenter = rightHand ? getPalmCenter(rightHand.points) : null;
+
+  const bothHandsVisible =
+    Boolean(currentLeftCenter) && Boolean(currentRightCenter);
+
+  if (bothHandsVisible) {
+    pugaLastLeftCenter = currentLeftCenter;
+    pugaLastRightCenter = currentRightCenter;
+    pugaLastHandsSeenAt = now;
+  }
+
+  const pugaPillarAlreadyStarted =
+    pugaStage >= PUGA_STAGE_FIRE_PILLAR;
+
+  const canUseLastHands =
+    pugaLastHandsSeenAt !== null &&
+    (
+      pugaPillarAlreadyStarted ||
+      now - pugaLastHandsSeenAt < PUGA_HAND_LOST_GRACE_DURATION
+    );
+
+  const leftCenter =
+    currentLeftCenter || (canUseLastHands ? pugaLastLeftCenter : null);
+
+  const rightCenter =
+    currentRightCenter || (canUseLastHands ? pugaLastRightCenter : null);
+
+  if (leftCenter && rightCenter) {
+    const rawDistance = Math.hypot(
+      leftCenter.x - rightCenter.x,
+      leftCenter.y - rightCenter.y,
+    );
+
+    const { width, height } = getStageSize();
+
+    const separateDistance =
+      Math.min(width, height) * PUGA_HAND_SEPARATE_DISTANCE_RATIO;
+
+    const maxPillarLength =
+      width * PUGA_MAX_PILLAR_LENGTH_RATIO;
+
+    const pugaElapsed =
+      techniqueStartedAt ? now - techniqueStartedAt : 0;
+
+    const orbHoldFinished =
+      pugaElapsed >= PUGA_ORB_HOLD_DURATION;
+
+    if (
+      pugaStage < PUGA_STAGE_FIRE_PILLAR &&
+      orbHoldFinished &&
+      rawDistance > separateDistance
+    ) {
+      pugaStage = PUGA_STAGE_FIRE_PILLAR;
+    }
+
+    const midpoint = {
+      x: (leftCenter.x + rightCenter.x) / 2,
+      y: (leftCenter.y + rightCenter.y) / 2,
+    };
+
+    // 1단계: 양손 중앙에 원형 불꽃 구슬 유지
+    if (pugaStage < PUGA_STAGE_FIRE_PILLAR) {
+      pugaPillarProgress = 0;
+      pugaLockedPillarLength = null;
+      drawPugaFireOrb(midpoint, 1);
+    }
+
+    // 2단계: 구슬이 불기둥으로 서서히 변형
+    if (pugaStage >= PUGA_STAGE_FIRE_PILLAR) {
+      pugaPillarProgress = Math.min(
+        pugaPillarProgress + PUGA_PILLAR_GROW_SPEED,
+        1,
+      );
+
+      const clampedDistance = Math.min(rawDistance, maxPillarLength);
+
+      // 3단계 발동 조건:
+      // 2단계 불기둥이 최대 길이에 도달하면 CONTROL 단계로 진입
+
+      // 2.5단계 발동 조건:
+      // 불기둥이 최대 길이에 도달하면 길이/중심/각도 고정
+      const reachedMaxPillarLength =
+        rawDistance >= maxPillarLength * 0.98 ||
+        clampedDistance >= maxPillarLength * 0.98 ||
+        pugaLockedPillarLength !== null;
+
+      if (reachedMaxPillarLength) {
+        pugaLockedPillarLength = maxPillarLength;
+
+        if (pugaStage < PUGA_STAGE_CONTROL_READY) {
+          pugaStage = PUGA_STAGE_CONTROL_READY;
+
+          pugaLockedPillarCenter = { ...midpoint };
+          pugaLockedPillarAngle = Math.atan2(
+            rightCenter.y - leftCenter.y,
+            rightCenter.x - leftCenter.x,
+          );
+
+          pugaControlBlendStartedAt = null;
+          pugaControlBlendProgress = 0;
+
+          pugaControlledCenter = null;
+          pugaLastControlledCenter = null;
+          pugaControlledAngle = null;
+          pugaLastControlledAngle = null;
+        }
+      }
+
+      const pillarLength =
+        pugaLockedPillarLength !== null
+          ? pugaLockedPillarLength
+          : clampedDistance;
+
+      // 기본값: 2단계에서는 양손 기준
+      let renderCenter = midpoint;
+      let renderAngle = Math.atan2(
+        rightCenter.y - leftCenter.y,
+        rightCenter.x - leftCenter.x,
+      );
+
+      // 2.5단계부터는 양손 위치를 더 이상 기준으로 쓰지 않음.
+      // CONTROL_READY / CONTROL 모두 잠긴 값을 기본 기준으로 사용.
+      if (pugaStage >= PUGA_STAGE_CONTROL_READY) {
+        renderCenter = pugaLockedPillarCenter || renderCenter;
+        renderAngle =
+          pugaLockedPillarAngle !== null
+            ? pugaLockedPillarAngle
+            : renderAngle;
+      }
+
+      // 2.5단계:
+      // 미러 화면 기준 왼손처럼 보이는 손을 쓰기 위해
+      // MediaPipe label 기준 rightHand를 전달함
+      if (pugaStage === PUGA_STAGE_CONTROL_READY) {
+        const controlPose = getPugaControlPoseFromLeftFingers(
+          rightHand,
+          pugaLockedPillarCenter || midpoint,
+        );
+
+        if (controlPose) {
+          pugaControlledCenter = controlPose.center;
+          pugaControlledAngle = controlPose.angle;
+
+          if (pugaControlBlendStartedAt === null) {
+            pugaControlBlendStartedAt = now;
+          }
+
+          const blendElapsed =
+            now - pugaControlBlendStartedAt;
+
+          pugaControlBlendProgress = Math.min(
+            blendElapsed / PUGA_CONTROL_BLEND_DURATION,
+            1,
+          );
+
+          const blendT = easeInOutCubic(pugaControlBlendProgress);
+
+          // 시작값은 2.5단계에서 고정된 불기둥 중심/각도
+          const startCenter = pugaLockedPillarCenter || midpoint;
+          const startAngle = pugaLockedPillarAngle ?? renderAngle;
+
+          // 목표값은 왼손 검지/중지 선의 중심/각도
+          renderCenter = lerpPoint(
+            startCenter,
+            pugaControlledCenter,
+            blendT,
+          );
+
+          renderAngle = lerpAngle(
+            startAngle,
+            pugaControlledAngle,
+            blendT,
+          );
+
+          if (pugaControlBlendProgress >= 1) {
+            pugaStage = PUGA_STAGE_CONTROL;
+          }
+        }
+      }
+
+      // 3단계:
+      // 통제권을 얻은 이후에는 거리 제한 없이
+      // 미러링 기준 왼손처럼 보이는 손, 코드상 rightHand의 검지/중지를 계속 따라감
+      if (pugaStage >= PUGA_STAGE_CONTROL) {
+        const controlPose = getPugaControlPoseFromLeftFingersFree(
+          rightHand,
+        );
+
+        const hasValidControlPose = Boolean(controlPose);
+
+        if (hasValidControlPose) {ㄴ
+          const nextAngle = controlPose.angle;
+
+          const hasPreviousAngle =
+            pugaLastControlledAngle !== null ||
+            pugaControlledAngle !== null;
+
+          const currentAngleForCheck =
+            pugaLastControlledAngle !== null
+              ? pugaLastControlledAngle
+              : pugaControlledAngle;
+
+          const angleJump =
+            hasPreviousAngle
+              ? getAngleDifference(currentAngleForCheck, nextAngle)
+              : 0;
+
+          // 검지/중지 재인식 순간 각도가 비정상적으로 크게 튀면
+          // 그 프레임은 잘못된 인식으로 보고 무시
+          const angleLooksSafe =
+            angleJump <= PUGA_CONTROL_MAX_ANGLE_JUMP;
+
+          if (angleLooksSafe) {
+            pugaControlledCenter = controlPose.center;
+            pugaControlledAngle = controlPose.angle;
+
+            pugaControlPoseLastSeenAt = now;
+            pugaControlPoseLost = false;
+          }
+        } else {
+          pugaControlPoseLost = true;
+        }
+
+        // 손가락 인식이 끊겼거나, 잘못된 각도값이 들어온 프레임에서는
+        // 새 목표값을 갱신하지 않고 마지막 정상 위치/각도를 그대로 사용
+        if (pugaControlledCenter) {
+          pugaLastControlledCenter =
+            pugaLastControlledCenter === null
+              ? pugaControlledCenter
+              : lerpPoint(
+                  pugaLastControlledCenter,
+                  pugaControlledCenter,
+                  PUGA_CONTROL_ANGLE_SMOOTHING,
+                );
+
+          renderCenter = pugaLastControlledCenter;
+        } else if (pugaLastControlledCenter) {
+          renderCenter = pugaLastControlledCenter;
+        }
+
+        if (pugaControlledAngle !== null) {
+          pugaLastControlledAngle =
+            pugaLastControlledAngle === null
+              ? pugaControlledAngle
+              : lerpAngle(
+                  pugaLastControlledAngle,
+                  pugaControlledAngle,
+                  PUGA_CONTROL_ANGLE_SMOOTHING,
+                );
+
+          renderAngle = pugaLastControlledAngle;
+        } else if (pugaLastControlledAngle !== null) {
+          renderAngle = pugaLastControlledAngle;
+        }
+      }
+
+      const scaledPillarLength =
+        pugaStage >= PUGA_STAGE_CONTROL
+          ? pillarLength * pugaDynamicPillarScale
+          : pillarLength;
+
+      const halfLength = scaledPillarLength / 2;
+
+      const pillarStart = {
+        x: renderCenter.x - Math.cos(renderAngle) * halfLength,
+        y: renderCenter.y - Math.sin(renderAngle) * halfLength,
+      };
+
+      const pillarEnd = {
+        x: renderCenter.x + Math.cos(renderAngle) * halfLength,
+        y: renderCenter.y + Math.sin(renderAngle) * halfLength,
+      };
+
+      let customPillarWidth = null;
+
+      if (pugaStage >= PUGA_STAGE_CONTROL) {
+        // 통제권 획득 직후의 기본 불기둥 두께를 기준값으로 사용
+        // PUGA_PILLAR_MAX_WIDTH = 현재 기본 최대 두께
+        const basePillarWidth = PUGA_PILLAR_MAX_WIDTH;
+
+        customPillarWidth = getPugaDynamicPillarWidth(
+          rightHand,
+          basePillarWidth,
+        );
+      }
+
+      drawPugaFirePillarFromCenter(
+        renderCenter,
+        pillarStart,
+        pillarEnd,
+        scaledPillarLength,
+        pugaPillarProgress,
+        customPillarWidth,
+      );
+    }
+  }
+
+  drawHands();
+}
+
 function getPugaPhase(elapsed) {}
 
 // =====================================================
@@ -1139,9 +2061,9 @@ function generateSlashLines() {
 
   const generatedLines = [];
 
-  // ===== 세로 계열 5개 =====
+  // ===== 세로 계열 7개 =====
   // 기준 위치는 유지하되, 각 선마다 살짝 다른 기울기 부여
-  const verticalBases = [0.13, 0.31, 0.5, 0.68, 0.87];
+  const verticalBases = [0.08, 0.22, 0.36, 0.5, 0.64, 0.78, 0.92];
 
   verticalBases.forEach((base) => {
     const topX = base + randomRange(-0.025, 0.025);
@@ -1155,9 +2077,9 @@ function generateSlashLines() {
     });
   });
 
-  // ===== 가로 계열 4개 =====
+  // ===== 가로 계열 5개 =====
   // 큰 덩어리 구조는 유지하되, 완전 수평처럼 보이지 않게 흔들기
-  const horizontalBases = [0.16, 0.36, 0.59, 0.82];
+  const horizontalBases = [0.12, 0.30, 0.48, 0.66, 0.84];
 
   horizontalBases.forEach((base) => {
     const leftY = base + randomRange(-0.035, 0.035);
@@ -1359,13 +2281,13 @@ function generateSlicePieces() {
 
   const verticalLines = [
     boundaryVerticalLeft,
-    ...slashLines.slice(0, 5),
+    ...slashLines.slice(0, 7),
     boundaryVerticalRight,
   ];
 
   const horizontalLines = [
     boundaryHorizontalTop,
-    ...slashLines.slice(5, 9),
+    ...slashLines.slice(7, 12),
     boundaryHorizontalBottom,
   ];
 
@@ -1394,8 +2316,6 @@ function generateSlicePieces() {
 
       if (!topLeft || !topRight || !bottomRight || !bottomLeft) continue;
 
-<<<<<<< HEAD
-=======
       const centerX =
         (topLeft.x + topRight.x + bottomRight.x + bottomLeft.x) / 4;
 
@@ -1408,7 +2328,6 @@ function generateSlicePieces() {
           centerY - height * 0.5
         );
 
->>>>>>> main
       // 조각이 흩어질 방향을 상/하/좌/우 중 랜덤 선택
       const splitDirection = randomChoice([
         { x: -1, y: 0 }, // 왼쪽
@@ -1559,13 +2478,10 @@ function drawMagicDissolveToReality(progress = 1) {
   // 1) 아래에는 일반 캠 조각을 먼저 그림
   drawSlicedSceneFromCanvas(realityCanvas, 1, 1, false);
 
-  // 2) 위에는 주술 영역 조각을 올리고, 외곽 → 중앙 순서로 재처럼 제거함
+  // 2) 위에는 주술 영역 조각을 테두리부터 줄어드는 마스크로 그림
   const dissolveT = Math.max(0, Math.min(1, progress));
 
   slicePieces.forEach((piece) => {
-<<<<<<< HEAD
-    drawEdgeDustDissolvePiece(piece, dissolveT);
-=======
     const startDelay =
       (1 - piece.distanceRatio) * 0.7;
 
@@ -1579,7 +2495,6 @@ function drawMagicDissolveToReality(progress = 1) {
       );
 
     drawDustDissolvePiece(piece, localT);
->>>>>>> main
   });
 }
 
@@ -1641,30 +2556,9 @@ function drawSingleSlicedPiece(sourceCanvas, piece, splitProgress = 1, alpha = 1
   ctx.restore();
 }
 
-<<<<<<< HEAD
-function drawEdgeDustDissolvePiece(piece, progress = 1) {
-=======
 // 조각난 영역 --> 일반 캠 전환
 function drawDustDissolvePiece(piece, progress = 1) {
->>>>>>> main
   const { width, height } = getStageSize();
-  const dpr = window.devicePixelRatio || 1;
-
-  const t = Math.max(0, Math.min(1, progress));
-
-  // 후반부에는 잔상/반동 없이 깔끔하게 제거
-  if (t >= 0.985) return;
-
-  const targetW = Math.floor(width * dpr);
-  const targetH = Math.floor(height * dpr);
-
-  if (dissolveCanvas.width !== targetW || dissolveCanvas.height !== targetH) {
-    dissolveCanvas.width = targetW;
-    dissolveCanvas.height = targetH;
-  }
-
-  dissolveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  dissolveCtx.clearRect(0, 0, width, height);
 
   const center = getPieceCenter(piece.points);
 
@@ -1672,33 +2566,44 @@ function drawDustDissolvePiece(piece, progress = 1) {
   const moveY = piece.dy;
   const rotation = piece.rotation;
 
-  // 1) 임시 캔버스에 주술 영역 조각을 먼저 그림
-  dissolveCtx.save();
+  const dissolveProgress = Math.max(0, Math.min(1, progress));
+  if (dissolveProgress >= 0.88) return;
 
-  dissolveCtx.translate(center.x + moveX, center.y + moveY);
-  dissolveCtx.rotate(rotation);
-  dissolveCtx.translate(-center.x, -center.y);
+  const bounds = getPieceBounds(piece.points);
+  const pieceSize = Math.max(bounds.width, bounds.height);
 
-<<<<<<< HEAD
-  dissolveCtx.beginPath();
-  dissolveCtx.moveTo(piece.points[0].x, piece.points[0].y);
-=======
   // 조각 가장자리부터 서서히 안쪽으로 무너지는 깊이
   const dissolveInset = pieceSize * dissolveProgress * 0.2;
->>>>>>> main
 
-  for (let i = 1; i < piece.points.length; i += 1) {
-    dissolveCtx.lineTo(piece.points[i].x, piece.points[i].y);
+  const dissolvedPoints = makeDissolvedPolygonPoints(
+    piece.points,
+    center,
+    dissolveInset,
+    dissolveProgress,
+    piece.burnSeed || 0,
+  );
+
+  ctx.save();
+
+  ctx.translate(center.x + moveX, center.y + moveY);
+  ctx.rotate(rotation);
+  ctx.translate(-center.x, -center.y);
+
+  // 남아 있는 주술 조각 영역
+  ctx.beginPath();
+  ctx.moveTo(dissolvedPoints[0].x, dissolvedPoints[0].y);
+
+  for (let i = 1; i < dissolvedPoints.length; i += 1) {
+    ctx.lineTo(dissolvedPoints[i].x, dissolvedPoints[i].y);
   }
 
-  dissolveCtx.closePath();
-  dissolveCtx.clip();
+  ctx.closePath();
+  ctx.clip();
 
-  // 너무 빨리 투명해지지 않게 약한 페이드만 적용   
-  const lateFadeT = Math.max(0, Math.min(1, (t - 0.82) / 0.18));
-  dissolveCtx.globalAlpha = 1 - smoothstep(lateFadeT) * 0.95;
+  // 후반으로 갈수록 조용히 투명해짐
+  ctx.globalAlpha = Math.pow(Math.max(0, 1 - dissolveProgress), 1.6);
 
-  dissolveCtx.drawImage(
+  ctx.drawImage(
     sliceSourceCanvas,
     0,
     0,
@@ -1710,53 +2615,26 @@ function drawDustDissolvePiece(piece, progress = 1) {
     height,
   );
 
-  // 2) 외곽 → 중앙 순서로 영역 이미지를 재처럼 지워나감
-  dissolveCtx.globalAlpha = 1;
-  dissolveCtx.globalCompositeOperation = 'destination-out';
-  erasePieceAsSoftVaporBands(dissolveCtx, piece, t);
+  ctx.restore();
 
-  dissolveCtx.restore();
-
-  // 3) 완성된 주술 조각만 메인 캔버스에 얹음
-  // 아래에는 이미 현실 캠 조각이 그려져 있으므로,
-  // 지워진 부분으로 현실 캠이 바로 드러남
-  ctx.drawImage(
-    dissolveCanvas,
-    0,
-    0,
-    dissolveCanvas.width,
-    dissolveCanvas.height,
-    0,
-    0,
-    width,
-    height,
-  );
-
-  // 구멍 대신 균열이 생기고, 작은 파편이 무너지는 느낌
-  // drawEdgeCracks(piece, t);
-  // drawEdgeFragments(piece, t);
-
-  // 원본 영역 이미지 조각이 위로 흩날려 날아가는 연출
-  // drawImageAshFragments(piece, t);
-  if (piece.burnSeed % 1 > 0.45) {
-    drawSoftVaporMist(piece, t);
-  }
+  // 가장자리 잔상과 가루 입자
+  // drawDissolveEdge(piece, dissolvedPoints, dissolveProgress);
+  drawDustParticles(piece, dissolvedPoints, dissolveProgress);
 }
 
-function drawSoftVaporMist(piece, progress = 1) {
-  if (progress <= 0.08 || progress >= 0.92) return;
-
+function drawDissolveEdge(piece, points, progress = 1) {
   const center = getPieceCenter(piece.points);
-  const bounds = getPieceBounds(piece.points);
-  const pieceSize = Math.max(bounds.width, bounds.height);
-  const seed = piece.burnSeed || 0;
 
   const moveX = piece.dx;
   const moveY = piece.dy;
   const rotation = piece.rotation;
 
-  const mistAlpha = Math.sin(progress * Math.PI) * 0.06;
-  const mistCount = 2;
+  const edgeAlpha =
+    progress < 0.96
+      ? Math.sin(progress * Math.PI) * 0.45
+      : 0;
+
+  if (edgeAlpha <= 0) return;
 
   ctx.save();
 
@@ -1764,670 +2642,160 @@ function drawSoftVaporMist(piece, progress = 1) {
   ctx.rotate(rotation);
   ctx.translate(-center.x, -center.y);
 
-  for (let i = 0; i < mistCount; i += 1) {
-    const randA = pseudoRandom(seed + i * 41);
-    const randB = pseudoRandom(seed + i * 67);
-    const randC = pseudoRandom(seed + i * 89);
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
 
-    const angle = randA * Math.PI * 2;
-    const distance = pieceSize * (0.15 + randB * 0.28);
+  // 검은 탄 자국이 아니라, 흐릿한 재/먼지 경계
+  ctx.strokeStyle = `rgba(35, 28, 30, ${0.42 * edgeAlpha})`;
+  ctx.lineWidth = 7;
+  drawClosedPolyline(points);
 
-    const baseX = center.x + Math.cos(angle) * distance;
-    const baseY = center.y + Math.sin(angle) * distance;
+  ctx.strokeStyle = `rgba(150, 115, 105, ${0.18 * edgeAlpha})`;
+  ctx.lineWidth = 2.2;
+  drawClosedPolyline(points);
 
-    const driftX =
-      Math.sin(progress * 5 + randA * Math.PI * 2) *
-      (10 + randB * 22);
+  ctx.strokeStyle = `rgba(210, 190, 175, ${0.1 * edgeAlpha})`;
+  ctx.lineWidth = 1;
+  drawClosedPolyline(points);
 
-    const driftY =
-      -progress *
-      (16 + randC * 32);
+  ctx.restore();
+}
 
-    const x = baseX + driftX;
-    const y = baseY + driftY;
+function makeDissolvedPolygonPoints(points, center, inset, progress, seed = 0) {
+  const result = [];
+  const samplesPerEdge = 16;
 
-    const radius = 28 + randB * 50;
+  for (let i = 0; i < points.length; i += 1) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
 
-    const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
-    gradient.addColorStop(0, `rgba(90, 90, 90, ${mistAlpha})`);
-    gradient.addColorStop(0.5, `rgba(55, 55, 55, ${mistAlpha * 0.4})`);
-    gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    for (let s = 0; s < samplesPerEdge; s += 1) {
+      const t = s / samplesPerEdge;
 
-    ctx.fillStyle = gradient;
+      const x = lerp(a.x, b.x, t);
+      const y = lerp(a.y, b.y, t);
+
+      const dx = center.x - x;
+      const dy = center.y - y;
+      const len = Math.hypot(dx, dy) || 1;
+
+      const nx = dx / len;
+      const ny = dy / len;
+
+      // 불규칙하게 가장자리가 부서지는 느낌
+      const noiseA = Math.sin(
+        x * 0.023 +
+        y * 0.031 +
+        seed * 0.71 +
+        progress * 4.2,
+      );
+
+      const noiseB = Math.sin(
+        x * 0.061 -
+        y * 0.047 +
+        seed * 1.13 +
+        progress * 7.7,
+      );
+
+      const noise = noiseA * 0.6 + noiseB * 0.4;
+
+      // 너무 튀지 않게 거칠기 제한
+      const roughness = 3 + progress * 10;
+      const localInset = inset + noise * roughness;
+
+      result.push({
+        x: x + nx * localInset,
+        y: y + ny * localInset,
+      });
+    }
+  }
+
+  return result;
+}
+
+function drawDustParticles(piece, edgePoints, progress = 1) {
+  if (progress <= 0.08 || progress >= 0.82) return;
+
+  const center = getPieceCenter(piece.points);
+
+  const moveX = piece.dx;
+  const moveY = piece.dy;
+  const rotation = piece.rotation;
+
+  const particleAlpha = Math.sin(progress * Math.PI) * 0.48;
+
+  ctx.save();
+
+  ctx.translate(center.x + moveX, center.y + moveY);
+  ctx.rotate(rotation);
+  ctx.translate(-center.x, -center.y);
+
+  // 가루는 많으면 싼티남. 적고 작게.
+  const step = Math.max(1, Math.floor(edgePoints.length / 18));
+
+  for (let i = 0; i < edgePoints.length; i += step) {
+    const p = edgePoints[i];
+
+    const seed = piece.burnSeed || 0;
+
+    const n1 = pseudoRandom(i * 13.17 + seed * 0.31);
+    const n2 = pseudoRandom(i * 27.91 + seed * 0.47);
+    const n3 = pseudoRandom(i * 41.73 + seed * 0.59);
+
+    // 위로 날리되, 좌우로 살짝 흩어짐
+    const driftX = (n1 - 0.5) * 44 * progress;
+    const driftY = -progress * (26 + n2 * 42);
+
+    // 후반부에는 더 퍼지면서 흐려짐
+    const spreadX = (n3 - 0.5) * progress * 24;
+
+    const size = 0.6 + n2 * 1.7;
+
+    const alpha = particleAlpha * (1 - progress * 0.35);
+
+    // 어두운 재 입자
+    ctx.fillStyle = `rgba(55, 48, 48, ${0.36 * alpha})`;
     ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.arc(
+      p.x + driftX + spreadX,
+      p.y + driftY,
+      size,
+      0,
+      Math.PI * 2,
+    );
     ctx.fill();
+
+    // 아주 약한 붉은 잔광. 과하지 않게.
+    // if (n1 > 0.68) {
+    //   ctx.fillStyle = `rgba(160, 70, 55, ${0.12 * alpha})`;
+    //   ctx.beginPath();
+    //   ctx.arc(
+    //     p.x + driftX * 0.8,
+    //     p.y + driftY * 0.8,
+    //     size * 0.7,
+    //     0,
+    //     Math.PI * 2,
+    //   );
+    //   ctx.fill();
+    // }
   }
 
   ctx.restore();
 }
 
-// function drawEdgeCracks(piece, progress = 1) {
-//   if (progress <= 0.05 || progress >= 0.95) return;
+function drawClosedPolyline(points) {
+  if (!points.length) return;
 
-//   const center = getPieceCenter(piece.points);
-//   const seed = piece.burnSeed || 0;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
 
-//   const moveX = piece.dx;
-//   const moveY = piece.dy;
-//   const rotation = piece.rotation;
+  for (let i = 1; i < points.length; i += 1) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
 
-//   const crackAlpha = Math.sin(progress * Math.PI) * 0.42;
-//   const cracksPerEdge = 8;
-
-//   ctx.save();
-
-//   ctx.translate(center.x + moveX, center.y + moveY);
-//   ctx.rotate(rotation);
-//   ctx.translate(-center.x, -center.y);
-
-//   ctx.lineCap = 'butt';
-//   ctx.lineJoin = 'miter';
-//   ctx.strokeStyle = `rgba(12, 6, 7, ${crackAlpha})`;
-//   ctx.lineWidth = 1;
-
-//   piece.points.forEach((a, edgeIndex) => {
-//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
-
-//     for (let i = 0; i < cracksPerEdge; i += 1) {
-//       const randA = pseudoRandom(seed + edgeIndex * 101 + i * 17);
-//       const randB = pseudoRandom(seed + edgeIndex * 173 + i * 23);
-//       const randC = pseudoRandom(seed + edgeIndex * 211 + i * 31);
-
-//       const start = randA * 0.28;
-//       const localT = Math.max(0, Math.min(1, (progress - start) / 0.58));
-
-//       if (localT <= 0) continue;
-
-//       const edgeT = (i + 0.5) / cracksPerEdge;
-
-//       const edgeX = lerp(a.x, b.x, edgeT);
-//       const edgeY = lerp(a.y, b.y, edgeT);
-
-//       const toCenterX = center.x - edgeX;
-//       const toCenterY = center.y - edgeY;
-//       const len = Math.hypot(toCenterX, toCenterY) || 1;
-
-//       const normalX = toCenterX / len;
-//       const normalY = toCenterY / len;
-
-//       const crackLength = 8 + randB * 24 * localT;
-//       const sideBend = (randC - 0.5) * 10;
-
-//       const startX = edgeX;
-//       const startY = edgeY;
-
-//       const endX =
-//         edgeX +
-//         normalX * crackLength +
-//         -normalY * sideBend;
-
-//       const endY =
-//         edgeY +
-//         normalY * crackLength +
-//         normalX * sideBend;
-
-//       ctx.beginPath();
-//       ctx.moveTo(startX, startY);
-//       ctx.lineTo(endX, endY);
-//       ctx.stroke();
-
-//       // 짧은 보조 균열
-//       if (randB > 0.58) {
-//         const branchT = 0.45 + randA * 0.25;
-//         const branchX = lerp(startX, endX, branchT);
-//         const branchY = lerp(startY, endY, branchT);
-
-//         ctx.beginPath();
-//         ctx.moveTo(branchX, branchY);
-//         ctx.lineTo(
-//           branchX + -normalY * (4 + randC * 8),
-//           branchY + normalX * (4 + randC * 8),
-//         );
-//         ctx.stroke();
-//       }
-//     }
-//   });
-
-//   ctx.restore();
-// }
-
-// function drawEdgeFragments(piece, progress = 1) {
-//   if (progress <= 0.04 || progress >= 0.9) return;
-
-//   const { width, height } = getStageSize();
-
-//   const center = getPieceCenter(piece.points);
-//   const seed = piece.burnSeed || 0;
-
-//   const moveX = piece.dx;
-//   const moveY = piece.dy;
-//   const rotation = piece.rotation;
-
-//   const fragmentAlpha = Math.sin(progress * Math.PI) * 0.22;
-//   const fragmentsPerEdge = 5;
-
-//   ctx.save();
-
-//   ctx.translate(center.x + moveX, center.y + moveY);
-//   ctx.rotate(rotation);
-//   ctx.translate(-center.x, -center.y);
-
-//   piece.points.forEach((a, edgeIndex) => {
-//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
-
-//     for (let i = 0; i < fragmentsPerEdge; i += 1) {
-//       const randA = pseudoRandom(seed + edgeIndex * 101 + i * 17);
-//       const randB = pseudoRandom(seed + edgeIndex * 173 + i * 23);
-//       const randC = pseudoRandom(seed + edgeIndex * 211 + i * 31);
-
-//       const start = randA * 0.36;
-//       const localT = Math.max(0, Math.min(1, (progress - start) / 0.56));
-
-//       if (localT <= 0 || localT >= 1) continue;
-
-//       const edgeT = (i + 0.5) / fragmentsPerEdge;
-
-//       const edgeX = lerp(a.x, b.x, edgeT);
-//       const edgeY = lerp(a.y, b.y, edgeT);
-
-//       const toCenterX = center.x - edgeX;
-//       const toCenterY = center.y - edgeY;
-//       const len = Math.hypot(toCenterX, toCenterY) || 1;
-
-//       const normalX = toCenterX / len;
-//       const normalY = toCenterY / len;
-
-//       // 파편이 바깥쪽으로 살짝 떨어지고 아래로 무너지는 느낌
-//       const fallX = -normalX * localT * (8 + randB * 18) + (randA - 0.5) * 16;
-//       const fallY = localT * (10 + randC * 28);
-
-//       const fragW = 3 + randB * 5;
-//       const fragH = 2 + randC * 4;
-//       const angle = (randA - 0.5) * 1.1 + localT * (randB - 0.5) * 1.5;
-
-//       ctx.save();
-
-//       ctx.translate(edgeX + fallX, edgeY + fallY);
-//       ctx.rotate(angle);
-
-//       ctx.beginPath();
-//       ctx.rect(-fragW / 2, -fragH / 2, fragW, fragH);
-//       ctx.clip();
-
-//       ctx.globalAlpha = fragmentAlpha * (1 - localT);
-
-//       // 파편 자체는 원본 영역 이미지에서 잘려 나온 것처럼 보이게 함
-//       ctx.drawImage(
-//         sliceSourceCanvas,
-//         0,
-//         0,
-//         sliceSourceCanvas.width,
-//         sliceSourceCanvas.height,
-//         0,
-//         0,
-//         width,
-//         height,
-//       );
-
-//       ctx.restore();
-//     }
-//   });
-
-//   ctx.restore();
-// }
-
-//회색 점 가루 날아가는 함수
-// function drawAshBandParticles(piece, progress = 1) {
-//   if (progress <= 0.04 || progress >= 0.96) return;
-
-//   const center = getPieceCenter(piece.points);
-//   const bounds = getPieceBounds(piece.points);
-//   const pieceSize = Math.max(bounds.width, bounds.height);
-//   const seed = piece.burnSeed || 0;
-
-//   const moveX = piece.dx;
-//   const moveY = piece.dy;
-//   const rotation = piece.rotation;
-
-//   const bandCount = 7;
-//   const particlesPerEdge = 7;
-//   const totalDepth = pieceSize * 0.5;
-
-//   ctx.save();
-
-//   ctx.translate(center.x + moveX, center.y + moveY);
-//   ctx.rotate(rotation);
-//   ctx.translate(-center.x, -center.y);
-
-//   piece.points.forEach((a, edgeIndex) => {
-//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
-
-//     for (let s = 0; s < particlesPerEdge; s += 1) {
-//       const edgeT = (s + 0.5) / particlesPerEdge;
-
-//       const edgeX = lerp(a.x, b.x, edgeT);
-//       const edgeY = lerp(a.y, b.y, edgeT);
-
-//       const toCenterX = center.x - edgeX;
-//       const toCenterY = center.y - edgeY;
-//       const len = Math.hypot(toCenterX, toCenterY) || 1;
-
-//       const normalX = toCenterX / len;
-//       const normalY = toCenterY / len;
-
-//       for (let band = 0; band < bandCount; band += 1) {
-//         const randA = pseudoRandom(seed + edgeIndex * 41 + s * 7 + band * 11);
-//         const randB = pseudoRandom(seed + edgeIndex * 67 + s * 13 + band * 17);
-//         const randC = pseudoRandom(seed + edgeIndex * 89 + s * 19 + band * 23);
-
-//         // band 0 = 가장 바깥, 숫자가 커질수록 안쪽
-//         const bandStart = (band / bandCount) * 0.78 + randA * 0.035;
-//         const bandDuration = 0.22;
-
-//         const localT = Math.max(
-//           0,
-//           Math.min(1, (progress - bandStart) / bandDuration),
-//         );
-
-//         if (localT <= 0 || localT >= 1) continue;
-
-//         const bandFrom = totalDepth * (band / bandCount);
-//         const bandTo = totalDepth * ((band + 1) / bandCount);
-//         const depth = lerp(bandFrom, bandTo, localT);
-
-//         const baseX = edgeX + normalX * depth;
-//         const baseY = edgeY + normalY * depth;
-
-//         // 위로 흩날리는 움직임
-//         const riseY = localT * (16 + randC * 42);
-//         const spreadX = (randB - 0.5) * (10 + localT * 26);
-
-//         // 바람/난기류처럼 흔들림
-//         const swirlX =
-//           Math.sin(localT * 5.4 + randA * Math.PI * 2) * (4 + randB * 8);
-
-//         const swirlY =
-//           Math.cos(localT * 4.2 + randC * Math.PI * 2) * (1.5 + randA * 3.5);
-
-//         const x = baseX + spreadX + swirlX;
-//         const y = baseY - riseY + swirlY;
-
-//         const size = 0.45 + randA * 1.35;
-//         const alpha = (1 - localT) * (0.08 + randB * 0.14);
-
-//         const grayBase = 42 + Math.floor(randC * 26);
-//         const r = grayBase + 8;
-//         const g = grayBase + 4;
-//         const bColor = grayBase + 2;
-
-//         ctx.fillStyle = `rgba(${r}, ${g}, ${bColor}, ${alpha})`;
-//         ctx.beginPath();
-//         ctx.arc(x, y, size, 0, Math.PI * 2);
-//         ctx.fill();
-//       }
-//     }
-//   });
-
-//   ctx.restore();
-// }
-
-// 원본 이미지 조각이 가루처럼 되어서 흩날리는 버전
-
-// function drawImageAshFragments(piece, progress = 1) {
-//   if (progress <= 0.04 || progress >= 0.98) return;
-
-//   const center = getPieceCenter(piece.points);
-//   const bounds = getPieceBounds(piece.points);
-//   const pieceSize = Math.max(bounds.width, bounds.height);
-//   const seed = piece.burnSeed || 0;
-
-//   const moveX = piece.dx;
-//   const moveY = piece.dy;
-//   const rotation = piece.rotation;
-
-//   const bandCount = 7;
-//   const fragmentsPerEdge = 7;
-//   const totalDepth = pieceSize * 0.52;
-
-//   ctx.save();
-
-//   ctx.translate(center.x + moveX, center.y + moveY);
-//   ctx.rotate(rotation);
-//   ctx.translate(-center.x, -center.y);
-
-//   piece.points.forEach((a, edgeIndex) => {
-//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
-
-//     for (let s = 0; s < fragmentsPerEdge; s += 1) {
-//       const edgeT = (s + 0.5) / fragmentsPerEdge;
-
-//       const edgeX = lerp(a.x, b.x, edgeT);
-//       const edgeY = lerp(a.y, b.y, edgeT);
-
-//       const toCenterX = center.x - edgeX;
-//       const toCenterY = center.y - edgeY;
-//       const len = Math.hypot(toCenterX, toCenterY) || 1;
-
-//       const normalX = toCenterX / len;
-//       const normalY = toCenterY / len;
-
-//       for (let band = 0; band < bandCount; band += 1) {
-//         const randA = pseudoRandom(seed + edgeIndex * 41 + s * 7 + band * 11);
-//         const randB = pseudoRandom(seed + edgeIndex * 67 + s * 13 + band * 17);
-//         const randC = pseudoRandom(seed + edgeIndex * 89 + s * 19 + band * 23);
-
-//         // 바깥 → 안쪽 순서
-//         const bandStart = (band / bandCount) * 0.78 + randA * 0.035;
-//         const bandDuration = 0.22;
-
-//         const localT = Math.max(
-//           0,
-//           Math.min(1, (progress - bandStart) / bandDuration),
-//         );
-
-//         if (localT <= 0 || localT >= 1) continue;
-
-//         const bandFrom = totalDepth * (band / bandCount);
-//         const bandTo = totalDepth * ((band + 1) / bandCount);
-//         const depth = lerp(bandFrom, bandTo, localT);
-
-//         // 조각이 생성되는 원래 위치
-//         const baseX = edgeX + normalX * depth;
-//         const baseY = edgeY + normalY * depth;
-
-//         // ===== 위로 흩날리는 움직임 =====
-//         const riseY = localT * (18 + randC * 44);
-//         const spreadX = (randB - 0.5) * (12 + localT * 30);
-
-//         const swirlX =
-//           Math.sin(localT * 5.5 + randA * Math.PI * 2) * (4 + randB * 8);
-
-//         const swirlY =
-//           Math.cos(localT * 4.3 + randC * Math.PI * 2) * (1.5 + randA * 3.5);
-
-//         const x = baseX + spreadX + swirlX;
-//         const y = baseY - riseY + swirlY;
-
-//         // ===== 실제 이미지 조각 크기 =====
-//         const fragW = 1.8 + randA * 4.2;
-//         const fragH = 1.2 + randB * 3.4;
-
-//         // 원본에서 샘플링할 영역
-//         const srcW = fragW * 1.8;
-//         const srcH = fragH * 1.8;
-//         const srcX = baseX - srcW / 2;
-//         const srcY = baseY - srcH / 2;
-
-//         const fragRotation =
-//           (randC - 0.5) * 1.2 + localT * (randB - 0.5) * 1.1;
-
-//         const alpha = (1 - localT) * (0.16 + randA * 0.24);
-
-//         ctx.save();
-
-//         ctx.globalAlpha = alpha;
-//         ctx.translate(x, y);
-//         ctx.rotate(fragRotation);
-
-//         // 잘게 잘린 원본 이미지 조각처럼 보이게
-//         ctx.beginPath();
-//         ctx.rect(-fragW / 2, -fragH / 2, fragW, fragH);
-//         ctx.clip();
-
-//         ctx.drawImage(
-//           sliceSourceCanvas,
-//           srcX,
-//           srcY,
-//           srcW,
-//           srcH,
-//           -fragW / 2,
-//           -fragH / 2,
-//           fragW,
-//           fragH,
-//         );
-
-//         ctx.restore();
-//       }
-//     }
-//   });
-
-//   ctx.restore();
-// }
-
-// function erasePieceAsAshBands(targetCtx, piece, progress = 1) {
-//   const center = getPieceCenter(piece.points);
-//   const bounds = getPieceBounds(piece.points);
-//   const pieceSize = Math.max(bounds.width, bounds.height);
-//   const seed = piece.burnSeed || 0;
-
-//   // 외곽 → 중앙까지 몇 단계로 사라질지
-//   const bandCount = 8;
-
-//   // 각 변에서 얼마나 촘촘히 샘플링할지
-//   const samplesPerEdge = 22;
-
-//   // 조각 중심 방향으로 얼마나 깊게 들어갈지
-//   const totalDepth = pieceSize * 0.58;
-
-//   piece.points.forEach((a, edgeIndex) => {
-//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
-
-//     for (let s = 0; s <= samplesPerEdge; s += 1) {
-//       const edgeT = s / samplesPerEdge;
-
-//       const edgeX = lerp(a.x, b.x, edgeT);
-//       const edgeY = lerp(a.y, b.y, edgeT);
-
-//       const toCenterX = center.x - edgeX;
-//       const toCenterY = center.y - edgeY;
-//       const len = Math.hypot(toCenterX, toCenterY) || 1;
-
-//       const normalX = toCenterX / len;
-//       const normalY = toCenterY / len;
-
-//       for (let band = 0; band < bandCount; band += 1) {
-//         const randA = pseudoRandom(seed + edgeIndex * 101 + s * 17 + band * 13);
-//         const randB = pseudoRandom(seed + edgeIndex * 173 + s * 23 + band * 19);
-//         const randC = pseudoRandom(seed + edgeIndex * 211 + s * 31 + band * 29);
-
-//         // band 0 = 가장 바깥쪽
-//         // band가 커질수록 중앙 쪽
-//         const bandStart = (band / bandCount) * 0.78 + randA * 0.035;
-//         const bandDuration = 0.2;
-
-//         const localT = Math.max(
-//           0,
-//           Math.min(1, (progress - bandStart) / bandDuration),
-//         );
-
-//         if (localT <= 0) continue;
-
-//         const bandFrom = totalDepth * (band / bandCount);
-//         const bandTo = totalDepth * ((band + 1) / bandCount);
-
-//         const depth = lerp(bandFrom, bandTo, localT);
-
-//         const jitterX = (randB - 0.5) * 6;
-//         const jitterY = (randC - 0.5) * 6;
-
-//         const x = edgeX + normalX * depth + jitterX;
-//         const y = edgeY + normalY * depth + jitterY;
-
-//         // 재처럼 작게 흩어지는 침식 모양
-//         const radiusX = 0.8 + randB * 2.8;
-//         const radiusY = 0.6 + randC * 2.2;
-//         const rot = randA * Math.PI;
-
-//         targetCtx.save();
-//         targetCtx.translate(x, y);
-//         targetCtx.rotate(rot);
-
-//         targetCtx.beginPath();
-//         targetCtx.ellipse(0, 0, radiusX, radiusY, 0, 0, Math.PI * 2);
-//         targetCtx.fill();
-
-//         targetCtx.restore();
-//       }
-//     }
-//   });
-// }
-
-function smoothstep(t) {
-  const v = Math.max(0, Math.min(1, t));
-  return v * v * (3 - 2 * v);
+  ctx.closePath();
+  ctx.stroke();
 }
-
-function erasePieceAsSoftVaporBands(targetCtx, piece, progress = 1) {
-  const center = getPieceCenter(piece.points);
-  const bounds = getPieceBounds(piece.points);
-  const pieceSize = Math.max(bounds.width, bounds.height);
-  const seed = piece.burnSeed || 0;
-
-  const bandCount = 5;
-  const samplesPerEdge = 5;
-  const totalDepth = pieceSize * 0.62;
-
-  targetCtx.save();
-
-  // 핵심: 점처럼 뚫리지 않고, 부드럽게 깎이게
-  targetCtx.filter = 'blur(5px)';
-
-  piece.points.forEach((a, edgeIndex) => {
-    const b = piece.points[(edgeIndex + 1) % piece.points.length];
-
-    for (let s = 0; s <= samplesPerEdge; s += 1) {
-      const edgeT = s / samplesPerEdge;
-
-      const edgeX = lerp(a.x, b.x, edgeT);
-      const edgeY = lerp(a.y, b.y, edgeT);
-
-      const toCenterX = center.x - edgeX;
-      const toCenterY = center.y - edgeY;
-      const len = Math.hypot(toCenterX, toCenterY) || 1;
-
-      const normalX = toCenterX / len;
-      const normalY = toCenterY / len;
-
-      for (let band = 0; band < bandCount; band += 1) {
-        const randA = pseudoRandom(seed + edgeIndex * 97 + s * 17 + band * 11);
-        const randB = pseudoRandom(seed + edgeIndex * 131 + s * 23 + band * 19);
-        const randC = pseudoRandom(seed + edgeIndex * 167 + s * 31 + band * 29);
-
-        // 바깥 band부터 안쪽 band 순서로 진행
-        const bandStart = (band / bandCount) * 0.74 + randA * 0.03;
-        const bandDuration = 0.28;
-
-        const localT = Math.max(
-          0,
-          Math.min(1, (progress - bandStart) / bandDuration),
-        );
-
-        if (localT <= 0) continue;
-
-        const eased = smoothstep(localT);
-
-        const bandFrom = totalDepth * (band / bandCount);
-        const bandTo = totalDepth * ((band + 1) / bandCount);
-        const depth = lerp(bandFrom, bandTo, eased);
-
-        const x =
-          edgeX +
-          normalX * depth +
-          (randB - 0.5) * 10;
-
-        const y =
-          edgeY +
-          normalY * depth +
-          (randC - 0.5) * 10 -
-          eased * (6 + randA * 12);
-
-        // 작고 많은 구멍 느낌이 아니라,
-        // 크고 흐린 침식 덩어리로 지움
-        const radiusX = 10 + randB * 18;
-        const radiusY = 7 + randC * 14;
-        const rot = randA * Math.PI;
-
-        targetCtx.globalAlpha = 0.18 + eased * 0.32;
-
-        targetCtx.save();
-        targetCtx.translate(x, y);
-        targetCtx.rotate(rot);
-
-        targetCtx.beginPath();
-        targetCtx.ellipse(0, 0, radiusX, radiusY, 0, 0, Math.PI * 2);
-        targetCtx.fill();
-
-        targetCtx.restore();
-      }
-    }
-  });
-
-  targetCtx.filter = 'none';
-  targetCtx.restore();
-}
-
-// function drawEdgeDustParticles(piece, progress = 1) {
-//   if (progress <= 0.08 || progress >= 0.84) return;
-
-//   const center = getPieceCenter(piece.points);
-
-//   const moveX = piece.dx;
-//   const moveY = piece.dy;
-//   const rotation = piece.rotation;
-
-//   const particleAlpha = Math.sin(progress * Math.PI) * 0.34;
-//   const samplesPerEdge = 9;
-//   const seed = piece.burnSeed || 0;
-
-//   ctx.save();
-
-//   ctx.translate(center.x + moveX, center.y + moveY);
-//   ctx.rotate(rotation);
-//   ctx.translate(-center.x, -center.y);
-
-//   piece.points.forEach((a, edgeIndex) => {
-//     const b = piece.points[(edgeIndex + 1) % piece.points.length];
-
-//     for (let s = 0; s <= samplesPerEdge; s += 1) {
-//       const n = pseudoRandom(seed + edgeIndex * 59 + s * 17);
-
-//       // 입자가 너무 많아지지 않게 일부만 그림
-//       if (n < 0.45) continue;
-
-//       const edgeT = s / samplesPerEdge;
-
-//       const x = lerp(a.x, b.x, edgeT);
-//       const y = lerp(a.y, b.y, edgeT);
-
-//       const driftX =
-//         (pseudoRandom(seed + edgeIndex * 13 + s * 3) - 0.5) *
-//         28 *
-//         progress;
-
-//       const driftY =
-//         -progress *
-//         (10 + pseudoRandom(seed + edgeIndex * 7 + s * 19) * 24);
-
-//       const size =
-//         0.55 +
-//         pseudoRandom(seed + edgeIndex * 23 + s * 31) *
-//         1.35;
-
-//       const alpha =
-//         particleAlpha *
-//         (1 - progress * 0.45) *
-//         pseudoRandom(seed + edgeIndex * 41 + s * 5);
-
-//       ctx.fillStyle = `rgba(60, 55, 55, ${alpha})`;
-//       ctx.beginPath();
-//       ctx.arc(x + driftX, y + driftY, size, 0, Math.PI * 2);
-//       ctx.fill();
-//     }
-//   });
-
-//   ctx.restore();
-// }
 
 function getPieceBounds(points) {
   let minX = Infinity;
@@ -2692,6 +3060,7 @@ function drawHandLabel(points, label) {
 
   const text = label === 'Right' ? 'USER RIGHT' : 'USER LEFT';
   const paddingX = 8;
+  const paddingY = 5;
   const textW = ctx.measureText(text).width;
   const boxW = textW + paddingX * 2;
   const boxH = 26;
@@ -2711,7 +3080,430 @@ function drawHandLabel(points, label) {
 // -----------------------------------------------------
 // 18-2.  스쿠나 푸가
 // -----------------------------------------------------
+function drawPugaFireOrb(center, intensity = 1) {
+  const time = performance.now() * 0.001;
 
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+
+  const pulse =
+    1 +
+    Math.sin(time * 8) * 0.08 +
+    Math.sin(time * 15) * 0.04;
+
+  const baseRadius = PUGA_FIRE_ORB_RADIUS * pulse;
+
+  const coreGradient = ctx.createRadialGradient(
+    center.x,
+    center.y,
+    0,
+    center.x,
+    center.y,
+    baseRadius * 1.55,
+  );
+
+  coreGradient.addColorStop(0, `rgba(255, 245, 180, ${0.95 * intensity})`);
+  coreGradient.addColorStop(0.28, `rgba(255, 170, 40, ${0.82 * intensity})`);
+  coreGradient.addColorStop(0.58, `rgba(255, 55, 10, ${0.45 * intensity})`);
+  coreGradient.addColorStop(1, 'rgba(120, 0, 0, 0)');
+
+  ctx.fillStyle = coreGradient;
+  ctx.beginPath();
+  ctx.arc(center.x, center.y, baseRadius * 1.55, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 불꽃 입자
+  for (let i = 0; i < 18; i += 1) {
+    const seed = i * 1.37;
+    const angle = seed + time * (2.5 + i * 0.03);
+    const radius =
+      baseRadius * (0.45 + pseudoRandom(i * 8.71) * 1.1);
+
+    const x =
+      center.x +
+      Math.cos(angle) * radius;
+
+    const y =
+      center.y +
+      Math.sin(angle) * radius -
+      Math.abs(Math.sin(time * 3 + i)) * 8;
+
+    const size =
+      5 +
+      pseudoRandom(i * 13.11) * 11;
+
+    const particleGradient = ctx.createRadialGradient(
+      x,
+      y,
+      0,
+      x,
+      y,
+      size,
+    );
+
+    particleGradient.addColorStop(0, 'rgba(255, 245, 170, 0.9)');
+    particleGradient.addColorStop(0.35, 'rgba(255, 125, 20, 0.55)');
+    particleGradient.addColorStop(1, 'rgba(180, 0, 0, 0)');
+
+    ctx.fillStyle = particleGradient;
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawPugaHandFlame(center, intensity = 1) {
+  const time = performance.now() * 0.001;
+
+  ctx.save();
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  for (let i = 0; i < 9; i += 1) {
+    const angle =
+      time * 4.5 +
+      i * 0.9;
+
+    const radius =
+      18 +
+      Math.sin(time * 5 + i) * 6;
+
+    const x =
+      center.x +
+      Math.cos(angle) * radius * 0.45;
+
+    const y =
+      center.y -
+      12 -
+      Math.abs(Math.sin(angle)) * 18 -
+      i * 1.5;
+
+    const flameSize =
+      22 +
+      Math.sin(time * 8 + i) * 5;
+
+    const gradient = ctx.createRadialGradient(
+      x,
+      y,
+      0,
+      x,
+      y,
+      flameSize,
+    );
+
+    gradient.addColorStop(0, `rgba(255, 245, 170, ${0.65 * intensity})`);
+    gradient.addColorStop(0.35, `rgba(255, 95, 20, ${0.38 * intensity})`);
+    gradient.addColorStop(1, 'rgba(150, 0, 0, 0)');
+
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(x, y, flameSize, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawPugaFirePillar(start, end) {
+  const time = performance.now() * 0.001;
+
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+
+  const distance = Math.hypot(dx, dy);
+  if (distance < 1) return;
+
+  const angle = Math.atan2(dy, dx);
+
+  const centerX = (start.x + end.x) / 2;
+  const centerY = (start.y + end.y) / 2;
+
+  const pillarWidth = Math.min(90, Math.max(34, distance * 0.22));
+
+  ctx.save();
+
+  ctx.translate(centerX, centerY);
+  ctx.rotate(angle);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  // 바깥 불기둥
+  const outerGradient = ctx.createLinearGradient(
+    0,
+    -pillarWidth,
+    0,
+    pillarWidth,
+  );
+
+  outerGradient.addColorStop(0, 'rgba(160, 0, 0, 0)');
+  outerGradient.addColorStop(0.25, 'rgba(255, 60, 10, 0.35)');
+  outerGradient.addColorStop(0.5, 'rgba(255, 210, 70, 0.55)');
+  outerGradient.addColorStop(0.75, 'rgba(255, 60, 10, 0.35)');
+  outerGradient.addColorStop(1, 'rgba(160, 0, 0, 0)');
+
+  ctx.fillStyle = outerGradient;
+  ctx.beginPath();
+
+  const leftX = -distance / 2;
+  const rightX = distance / 2;
+
+  ctx.moveTo(leftX, 0);
+
+  for (let x = leftX; x <= rightX; x += 18) {
+    const wave =
+      Math.sin(x * 0.04 + time * 8) * 10 +
+      Math.sin(x * 0.09 - time * 6) * 5;
+
+    ctx.lineTo(x, -pillarWidth * 0.5 + wave);
+  }
+
+  for (let x = rightX; x >= leftX; x -= 18) {
+    const wave =
+      Math.sin(x * 0.05 - time * 7) * 10 +
+      Math.sin(x * 0.08 + time * 5) * 5;
+
+    ctx.lineTo(x, pillarWidth * 0.5 + wave);
+  }
+
+  ctx.closePath();
+  ctx.fill();
+
+  // 중심 고열 코어
+  ctx.strokeStyle = 'rgba(255, 245, 180, 0.75)';
+  ctx.lineWidth = Math.max(8, pillarWidth * 0.18);
+  ctx.lineCap = 'round';
+
+  ctx.beginPath();
+  ctx.moveTo(leftX, 0);
+
+  for (let x = leftX; x <= rightX; x += 16) {
+    const wave =
+      Math.sin(x * 0.05 + time * 10) * 5;
+
+    ctx.lineTo(x, wave);
+  }
+
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+function drawPugaFirePillarFromCenter(
+  center,
+  leftCenter,
+  rightCenter,
+  targetLength,
+  progress = 1,
+  customPillarWidth = null,
+) {
+  const time = performance.now() * 0.001;
+
+  const dx = rightCenter.x - leftCenter.x;
+  const dy = rightCenter.y - leftCenter.y;
+
+  const rawDistance = Math.hypot(dx, dy);
+  if (rawDistance < 1) {
+    drawPugaFireOrb(center, 1);
+    return;
+  }
+
+  const angle = Math.atan2(dy, dx);
+
+  const t = easeOutCubic(Math.max(0, Math.min(1, progress)));
+
+  const orbRadius = PUGA_FIRE_ORB_RADIUS * 1.25;
+  const currentLength = lerp(orbRadius, targetLength, t);
+
+  const defaultPillarWidth =
+    lerp(
+      PUGA_PILLAR_BASE_WIDTH,
+      Math.min(
+        PUGA_PILLAR_MAX_WIDTH,
+        Math.max(PUGA_PILLAR_BASE_WIDTH * 0.58, targetLength * 0.18),
+      ),
+      t,
+    );
+
+  const pillarWidth =
+    customPillarWidth !== null
+      ? customPillarWidth
+      : defaultPillarWidth;
+
+  ctx.save();
+
+  ctx.translate(center.x, center.y);
+  ctx.rotate(angle);
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  const leftX = -currentLength / 2;
+  const rightX = currentLength / 2;
+  const length = Math.max(1, rightX - leftX);
+
+  // 바깥 불꽃 글로우
+  const glowGradient = ctx.createLinearGradient(
+    0,
+    -pillarWidth,
+    0,
+    pillarWidth,
+  );
+
+  glowGradient.addColorStop(0, 'rgba(120, 0, 0, 0)');
+  glowGradient.addColorStop(0.16, `rgba(255, 35, 0, ${0.34 + t * 0.18})`);
+  glowGradient.addColorStop(0.38, `rgba(255, 120, 20, ${0.5 + t * 0.22})`);
+  glowGradient.addColorStop(0.5, `rgba(255, 245, 150, ${0.68 + t * 0.22})`);
+  glowGradient.addColorStop(0.62, `rgba(255, 120, 20, ${0.5 + t * 0.22})`);
+  glowGradient.addColorStop(0.84, `rgba(190, 0, 0, ${0.28 + t * 0.16})`);
+  glowGradient.addColorStop(1, 'rgba(120, 0, 0, 0)');
+
+  ctx.fillStyle = glowGradient;
+  ctx.beginPath();
+
+  // 왼쪽 끝을 뾰족하게 시작
+  ctx.moveTo(leftX, 0);
+
+  // 위쪽 외곽선
+  for (let x = leftX; x <= rightX; x += 12) {
+    const ratio = (x - leftX) / length;
+
+    // 0 at ends, 1 at center
+    const centerBulge = Math.pow(Math.sin(ratio * Math.PI), 0.72);
+
+    const halfWidth =
+      pillarWidth *
+      (
+        PUGA_PILLAR_TIP_WIDTH_RATIO +
+        centerBulge * PUGA_PILLAR_CENTER_BULGE
+      ) *
+      t;
+
+    const wave =
+      (
+        Math.sin(x * 0.045 + time * 8.5) * PUGA_PILLAR_EDGE_WAVE +
+        Math.sin(x * 0.11 - time * 5.7) * PUGA_PILLAR_EDGE_WAVE * 0.45
+      ) *
+      centerBulge *
+      t;
+
+    ctx.lineTo(x, -halfWidth + wave);
+  }
+
+  // 오른쪽 끝을 뾰족하게 찍음
+  ctx.lineTo(rightX, 0);
+
+  // 아래쪽 외곽선
+  for (let x = rightX; x >= leftX; x -= 12) {
+    const ratio = (x - leftX) / length;
+
+    const centerBulge = Math.pow(Math.sin(ratio * Math.PI), 0.72);
+
+    const halfWidth =
+      pillarWidth *
+      (
+        PUGA_PILLAR_TIP_WIDTH_RATIO +
+        centerBulge * PUGA_PILLAR_CENTER_BULGE
+      ) *
+      t;
+
+    const wave =
+      (
+        Math.sin(x * 0.052 - time * 8) * PUGA_PILLAR_EDGE_WAVE +
+        Math.sin(x * 0.1 + time * 5.4) * PUGA_PILLAR_EDGE_WAVE * 0.45
+      ) *
+      centerBulge *
+      t;
+
+    ctx.lineTo(x, halfWidth + wave);
+  }
+
+  ctx.closePath();
+  ctx.fill();
+
+  // 중심 고열 코어도 끝으로 갈수록 얇아지는 형태로 그림
+  const coreGradient = ctx.createLinearGradient(
+    0,
+    -pillarWidth * 0.25,
+    0,
+    pillarWidth * 0.25,
+  );
+
+  coreGradient.addColorStop(0, 'rgba(255, 120, 20, 0)');
+  coreGradient.addColorStop(0.5, `rgba(255, 245, 180, ${0.72 + t * 0.22})`);
+  coreGradient.addColorStop(1, 'rgba(255, 120, 20, 0)');
+
+  ctx.fillStyle = coreGradient;
+  ctx.beginPath();
+
+  ctx.moveTo(leftX, 0);
+
+  for (let x = leftX; x <= rightX; x += 14) {
+    const ratio = (x - leftX) / length;
+    const centerBulge = Math.pow(Math.sin(ratio * Math.PI), 1.05);
+
+    const coreHalfWidth =
+      pillarWidth * 0.18 * centerBulge * t;
+
+    const wave =
+      Math.sin(x * 0.06 + time * 12) * 3.5 * centerBulge * t;
+
+    ctx.lineTo(x, -coreHalfWidth + wave);
+  }
+
+  ctx.lineTo(rightX, 0);
+
+  for (let x = rightX; x >= leftX; x -= 14) {
+    const ratio = (x - leftX) / length;
+    const centerBulge = Math.pow(Math.sin(ratio * Math.PI), 1.05);
+
+    const coreHalfWidth =
+      pillarWidth * 0.18 * centerBulge * t;
+
+    const wave =
+      Math.sin(x * 0.06 + time * 12) * 3.5 * centerBulge * t;
+
+    ctx.lineTo(x, coreHalfWidth + wave);
+  }
+
+  ctx.closePath();
+  ctx.fill();
+
+  // 양끝 불꽃 잔상은 너무 둥글면 뾰족함을 해치므로 약하게
+  drawLocalPugaEndFlare(leftX, 0, 0.55);
+  drawLocalPugaEndFlare(rightX, 0, 0.55);
+
+  ctx.restore();
+
+  // 중앙 구슬 잔광
+  drawPugaFireOrb(center, 0.28 * (1 - t) + 0.12);
+}
+
+function drawLocalPugaEndFlare(x, y, intensity = 1) {
+  const time = performance.now() * 0.001;
+
+  const radius =
+    26 +
+    Math.sin(time * 10 + x * 0.01) * 4;
+
+  const gradient = ctx.createRadialGradient(
+    x,
+    y,
+    0,
+    x,
+    y,
+    radius,
+  );
+
+  gradient.addColorStop(0, `rgba(255, 245, 170, ${0.85 * intensity})`);
+  gradient.addColorStop(0.38, `rgba(255, 120, 20, ${0.45 * intensity})`);
+  gradient.addColorStop(1, 'rgba(180, 0, 0, 0)');
+
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fill();
+}
 
 // =====================================================
 // 19. Debug
@@ -2731,21 +3523,11 @@ function drawDebugPanel() {
       : sceneState;
 
   const lines = [
-    `cameraReady: ${cameraReady}`,
-    `hands: ${latestHands.length}`,
-    `left hand detected: ${Boolean(leftHand)}`,
-    `right hand detected: ${Boolean(rightHand)}`,
-    `left gesture: ${rawLeftGestureActive}`,
-    `right gesture: ${rawRightGestureActive}`,
-    `one hand gesture: ${rawDoorGestureActive}`,
-    `hold progress: ${oneHandGestureHoldProgress.toFixed(2)}`,
-    `false frames: ${doorFalseFrameCount}`,
-    `sequenceTriggered: ${sequenceTriggered}`,
-    `sceneState: ${sceneState}`,
-    `activeTechnique: ${activeTechnique}`,
-    `phase: ${phase}`,
-    `segmentationReady: ${segmentationReady}`,
-    `door image loaded: ${doorImage.complete}`,
+    `puga signal: ${rawPugaSignalActive}`,
+    `puga hold progress: ${pugaSignalHoldProgress.toFixed(2)}`,
+    `puga false frames: ${pugaFalseFrameCount}`,
+    `puga stage: ${pugaStage}`,
+    `puga reason: ${pugaDebugReason}`,
   ];
 
   ctx.save();
@@ -2788,6 +3570,10 @@ function easeInOutCubic(t) {
 
 function lerp(a, b, t) {
   return a + (b - a) * t;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 function loadScriptIfNeeded(globalName, src) {
