@@ -11,9 +11,9 @@
 
 ## 👋 직접 체험하기
 
-**배포 후 사용할 주소:** https://hamhj7694.github.io/20260521_Interactive_bokma_ef/
+**체험 사이트(공개 배포 완료):** https://hamhj7694.github.io/20260521_Interactive_bokma_ef/
 
-> GitHub Pages는 저장소의 **Settings → Pages → Build and deployment → Source: GitHub Actions**가 활성화되어 있어야 합니다. **현재 저장소가 비공개이므로 Pages 공개 배포는 계정 플랜·저장소 설정의 지원 여부에 따라 추가 설정이 필요할 수 있습니다.** URL의 활성화 여부는 GitHub **Actions → Deploy interactive demo to GitHub Pages**에서 배포 성공을 확인하세요.
+> **배포 확인:** GitHub Actions 빌드·배포가 성공했고, 배포 워크플로에서 공개 URL의 HTTP 응답과 체험 안내·카메라·초기화 버튼 요소를 확인했습니다. 실제 손 제스처 반응은 사용 중인 웹캠과 환경에서 추가 확인해 주세요.
 
 권장 환경: **PC 크롬·엣지 / 웹캠 / HTTPS 연결**. 처음 접속할 때 브라우저의 **카메라 사용 권한을 허용**하세요. 카메라는 체험용이며 음성은 요청하지 않습니다.
 
