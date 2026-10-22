@@ -3,19 +3,33 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vite MediaPipe Hands Canvas</title>
+    <meta name="theme-color" content="#11131a" />
+    <meta name="description" content="웹캠과 손동작으로 애니메이션에서 영감을 받은 복마어주자·푸가 이펙트를 체험하는 비공식 팬 프로젝트" />
+    <title>손동작으로 즐기는 애니메이션 기술 체험 | Gesture Effects</title>
   </head>
-
   <body>
     <div id="app">
-      <canvas id="stage"></canvas>
+      <canvas id="stage" aria-label="웹캠 기반 손동작 인터랙티브 화면"></canvas>
+      <video id="webcam" autoplay playsinline muted></video>
 
-      <video
-        id="webcam"
-        autoplay
-        playsinline
-        muted
-      ></video>
+      <aside id="experience-guide" aria-label="체험 사용 설명">
+        <details open>
+          <summary><span>👋</span> 손동작 체험 가이드 <span class="guide-toggle">열기 / 접기</span></summary>
+          <div class="guide-content">
+            <p class="guide-intro">애니메이션 캐릭터의 기술에서 영감을 받은 손동작 이펙트 체험</p>
+            <p id="camera-status" role="status" aria-live="polite">카메라 연결을 확인하고 있어요.</p>
+            <ol>
+              <li><strong>복마어주자</strong> — 한 손의 검지·중지만 위로 펴고, 약지·새끼손가락은 접은 자세를 <strong>약 3초</strong> 유지하세요. 영역 전개와 화면 분할 효과가 시작됩니다.</li>
+              <li><strong>푸가</strong> — 카메라에 <strong>양손</strong>을 보이고 각 손의 손가락을 살짝 굽힌 자세를 <strong>약 2초</strong> 유지하세요. 두 손 사이에 불꽃 구슬이 생깁니다.</li>
+              <li><strong>푸가 이어서 조작</strong> — 손을 좌우로 멀리 벌리면 불꽃이 길게 뻗습니다. 최대 길이까지 벌린 뒤, 화면에서 왼쪽으로 보이는 손의 검지·중지를 움직여 불기둥의 방향을 조작해 보세요.</li>
+            </ol>
+            <button type="button" id="reset-effect" title="R 키와 동일하게 화면 효과를 초기화합니다">↻ 초기화 (R)</button>
+            <p class="guide-hint">⌨ 키보드 <kbd>R</kbd>을 눌러도 초기화할 수 있습니다. 기술을 다시 시도하려면 초기화해 주세요.</p>
+            <p class="guide-hint">📷 카메라 허용이 필요합니다. 밝은 공간에서 양손이 화면 안에 보이게 해주세요. PC 크롬 브라우저를 권장합니다.</p>
+            <p class="guide-disclaimer">개인 학습·체험용 비공식 팬 프로젝트로, 원작의 공식 서비스가 아닙니다. 카메라 영상은 브라우저에서 처리하며 별도 녹화 기능을 구현하지 않았습니다.</p>
+          </div>
+        </details>
+      </aside>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
