@@ -20,7 +20,7 @@ const MIRROR_VIEW = true;
 // =====================================================
 
 const doorImage = new Image();
-doorImage.src = '/door_one.png';
+doorImage.src = `${import.meta.env.BASE_URL}door_one.png`;
 
 // =====================================================
 // 4. Timeline Settings
@@ -312,6 +312,8 @@ async function init() {
   resizeCanvas();
   window.addEventListener('resize', resizeCanvas);
   window.addEventListener('keydown', handleKeyDown);
+  document.querySelector('#reset-effect')?.addEventListener('click', resetEffect);
+  const cameraStatus = document.querySelector('#camera-status');
 
   function handleKeyDown(event) {
     if (event.key.toLowerCase() === 'r') {
@@ -362,8 +364,11 @@ async function setupCamera() {
     });
 
     cameraReady = true;
+    if (cameraStatus) cameraStatus.textContent = '카메라 연결됨 · 손동작을 취해 보세요';
   } catch (error) {
     console.error('웹캠을 시작할 수 없습니다.', error);
+    if (cameraStatus) cameraStatus.textContent =
+      '카메라를 사용할 수 없어요. 브라우저 권한과 HTTPS 연결을 확인하세요.';
   }
 }
 
@@ -1737,7 +1742,7 @@ function drawPugaSequence() {
 
         const hasValidControlPose = Boolean(controlPose);
 
-        if (hasValidControlPose) {ㄴ
+        if (hasValidControlPose) {
           const nextAngle = controlPose.angle;
 
           const hasPreviousAngle =
