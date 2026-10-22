@@ -54,3 +54,15 @@ jobs:
       - name: Deploy GitHub Pages site
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Verify public site and experience guide
+        env:
+          SITE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          echo "Checking public demo: $SITE_URL"
+          page=$(curl --fail --silent --show-error --location \
+            --retry 12 --retry-delay 5 --retry-all-errors "$SITE_URL")
+          echo "$page" | grep -q '손동작 체험 가이드'
+          echo "$page" | grep -q 'reset-effect'
+          echo "$page" | grep -q 'webcam'
+          echo "Public homepage, experience guide, camera element and reset button found."
