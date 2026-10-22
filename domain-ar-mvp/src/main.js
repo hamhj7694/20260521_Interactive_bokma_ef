@@ -7,6 +7,7 @@ import './style.css';
 const video = document.querySelector('#webcam');
 const canvas = document.querySelector('#stage');
 const ctx = canvas.getContext('2d');
+const cameraStatus = document.querySelector('#camera-status');
 
 // =====================================================
 // 2. Global Settings
@@ -313,7 +314,6 @@ async function init() {
   window.addEventListener('resize', resizeCanvas);
   window.addEventListener('keydown', handleKeyDown);
   document.querySelector('#reset-effect')?.addEventListener('click', resetEffect);
-  const cameraStatus = document.querySelector('#camera-status');
 
   function handleKeyDown(event) {
     if (event.key.toLowerCase() === 'r') {
